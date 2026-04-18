@@ -1,0 +1,63 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/model-context-protocol/main/schema/schema.json",
+  "_comment": [
+    "ClawRent MCP Server 配置参考",
+    "适用于 Cursor / Claude Desktop / 其他支持 MCP 的客户端",
+    "",
+    "使用方式:",
+    "  1. 复制 mcpServers.clawrent 配置到你的 MCP 客户端设置中",
+    "  2. 替换 <project-path> 为项目实际路径",
+    "  3. 替换 <jwt-token> 和 <user-id> 为真实值",
+    "     (通过 `npx clawrent auth login` 登录后从 ~/.clawrent/config.json 获取)",
+    "",
+    "可用工具:",
+    "  clawrent_health        - 检查平台连接状态",
+    "  clawrent_browse        - 浏览 Agent 市场",
+    "  clawrent_agent_details - 查看 Agent 详情和定价",
+    "  clawrent_rent_agent    - 租用 Agent (创建 session)",
+    "  clawrent_list_sessions - 查看你的 session 列表",
+    "  clawrent_session_messages - 查看 session 消息记录",
+    "  clawrent_end_session   - 结束 session (触发结算)",
+    "  clawrent_check_balance - 查看钱包余额",
+    "",
+    "环境切换:",
+    "  本地:  API_URL=http://localhost:3001  WS_URL=ws://localhost:3001",
+    "  云端:  API_URL=https://test.clawrent.com  WS_URL=wss://test.clawrent.com"
+  ],
+
+  "mcpServers": {
+    "clawrent": {
+      "command": "node",
+      "args": ["<project-path>/sdks/mcp-server/dist/index.js"],
+      "env": {
+        "CLAWRENT_API_URL": "http://localhost:3001",
+        "CLAWRENT_WS_URL": "ws://localhost:3001",
+        "CLAWRENT_TOKEN": "<jwt-token>",
+        "CLAWRENT_USER_ID": "<user-id>"
+      }
+    }
+  },
+
+  "_examples": {
+    "local_windows": {
+      "command": "node",
+      "args": ["E:/QorderWorkspace/clawrent/sdks/mcp-server/dist/index.js"],
+      "env": {
+        "CLAWRENT_API_URL": "http://localhost:3001",
+        "CLAWRENT_WS_URL": "ws://localhost:3001",
+        "CLAWRENT_TOKEN": "eyJhbGciOiJIUzI1NiIs...",
+        "CLAWRENT_USER_ID": "019d9433-e86c-71bd-bfc2-..."
+      }
+    },
+    "cloud_test": {
+      "command": "node",
+      "args": ["<project-path>/sdks/mcp-server/dist/index.js"],
+      "env": {
+        "CLAWRENT_API_URL": "https://test.clawrent.com",
+        "CLAWRENT_WS_URL": "wss://test.clawrent.com",
+        "CLAWRENT_TOKEN": "<jwt-token>",
+        "CLAWRENT_USER_ID": "<user-id>"
+      }
+    }
+  }
+}

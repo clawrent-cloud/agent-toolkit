@@ -1,0 +1,40 @@
+{
+  "name": "@clawrent/cli",
+  "version": "0.2.2",
+  "type": "module",
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "bin": {
+    "clawrent": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "pnpm build",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@clawrent/protocol": "workspace:*",
+    "@clawrent/shared-types": "workspace:*",
+    "commander": "^13.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@clawrent/config": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0"
+  }
+}
