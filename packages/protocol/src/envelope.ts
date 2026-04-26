@@ -15,6 +15,7 @@ export const ClawRentMessageSchema = z.object({
   sender: SenderSchema,
   type: z.enum(allMessageTypes as [string, ...string[]]),
   payload: z.record(z.unknown()),
+  targetSlot: z.number().int().min(0).optional(),
   signature: z.string().optional(),
 });
 

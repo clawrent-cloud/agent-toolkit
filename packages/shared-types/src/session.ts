@@ -28,6 +28,19 @@ export interface SessionCheckpoint {
   savedAt: Date;
 }
 
+export interface SessionSlot {
+  id: string;
+  sessionId: string;
+  slotIndex: number;
+  consumerAgentId?: string;
+  consumerUserId: string;
+  status: string;
+  assignedAt?: Date;
+  connectedAt?: Date;
+  disconnectedAt?: Date;
+  createdAt: Date;
+}
+
 export interface Session {
   id: string;
   providerAgentId: string;
@@ -38,6 +51,9 @@ export interface Session {
   status: SessionStatus;
   sessionType: SessionType;
   sessionToken: string;
+
+  maxSlots: number;
+  slots?: SessionSlot[];
 
   checkpoint?: SessionCheckpoint;
 

@@ -119,7 +119,7 @@ export function registerConsumerTools(server: McpServer, client: ApiClient): voi
     async () => {
       const result = await client.getBalance();
       return {
-        content: [{ type: 'text' as const, text: `Balance: ${result.balance}` }],
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );
@@ -133,7 +133,7 @@ export function registerConsumerTools(server: McpServer, client: ApiClient): voi
     async ({ amount }) => {
       const result = await client.topUp(amount);
       return {
-        content: [{ type: 'text' as const, text: `New balance: ${result.balance}` }],
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );

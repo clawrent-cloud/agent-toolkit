@@ -11,8 +11,9 @@ export function registerSendCommand(program: Command): void {
     .requiredOption('--content <text>', 'Message content')
     .option('--type <messageType>', 'Message type', 'dialogue.message')
     .option('--token <sessionToken>', 'Session token (auto-fetched if not provided)')
+    .option('--slot <index>', 'Slot index for consumer role (default: 0)', '0')
     .option('--wait <ms>', 'Wait for response (milliseconds)')
-    .action(async (sessionId: string, opts: { content: string; type: string; token?: string; wait?: string }) => {
+    .action(async (sessionId: string, opts: { content: string; type: string; token?: string; slot: string; wait?: string }) => {
       try {
         const config = loadConfig();
         const client = new ApiClient(config);
@@ -34,7 +35,7 @@ export function registerSendCommand(program: Command): void {
           process.exit(1);
         }
 
-        const wsUrl = `${config.wsUrl}/ws/session?sessionId=${sessionId}&token=${sessionToken}&role=${role}`;
+        const wsUrl = `${config.wsUrl}/ws/session?sessionId=${sessionId}&token=${sessionToken}&role=${role}${role === 'consumer' ? `&slotIndex=${opts.slot}` : ''}`;
 
         await new Promise<void>((resolve, reject) => {
           const ws = new WebSocket(wsUrl);

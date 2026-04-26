@@ -39,12 +39,14 @@ export interface SessionNewParams {
   sessionToken: string;
   taskDescription: string;
   consumerUserId: string;
+  slotIndex?: number;
 }
 
 export interface SessionPendingParams {
   sessionId: string;
   taskDescription: string;
   consumerUserId: string;
+  slotIndex?: number;
 }
 
 export interface InstructionParams {

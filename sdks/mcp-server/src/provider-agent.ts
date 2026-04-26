@@ -7,6 +7,7 @@ export interface ActiveSession {
   sessionToken: string;
   taskDescription: string;
   consumerUserId?: string;
+  slotIndex?: number;
 }
 
 /**
@@ -179,7 +180,10 @@ export class ProviderAgent extends EventEmitter {
       const taskDescription = (payload['taskDescription'] as string) || '';
       const consumerUserId = payload['consumerUserId'] as string | undefined;
 
-      const session: ActiveSession = { sessionId, sessionToken, taskDescription, consumerUserId };
+      const session: ActiveSession = {
+        sessionId, sessionToken, taskDescription, consumerUserId,
+        slotIndex: (payload['slotIndex'] as number) ?? 0,
+      };
       this.activeSessions.set(sessionId, session);
 
       this.emit('session:new', session);

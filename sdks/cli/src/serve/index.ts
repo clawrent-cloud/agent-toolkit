@@ -258,6 +258,7 @@ async function runDaemon(opts: ServeOptions): Promise<void> {
               sessionToken,
               taskDescription: (payload['taskDescription'] as string) ?? '',
               consumerUserId: (payload['consumerUserId'] as string) ?? '',
+              slotIndex: (payload['slotIndex'] as number) ?? 0,
             });
             sessionManager.connect(sid, sessionToken);
           } else {
@@ -265,6 +266,7 @@ async function runDaemon(opts: ServeOptions): Promise<void> {
               sessionId: sid,
               taskDescription: (payload['taskDescription'] as string) ?? '',
               consumerUserId: (payload['consumerUserId'] as string) ?? '',
+              slotIndex: (payload['slotIndex'] as number) ?? 0,
             });
           }
         }

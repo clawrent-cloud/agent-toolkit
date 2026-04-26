@@ -4,35 +4,42 @@ import { loadConfig, saveConfig, clearConfig, getConfigPath } from '../config.js
 import { ApiClient } from '../api-client.js';
 import { printJson, printError, printSuccess } from '../output.js';
 
-function deriveWsUrl(apiUrl: string): string {
-  return apiUrl.replace(/^http/, 'ws');
-}
-
+/**
+ * Prompt for input. Works in both interactive (TTY) and non-interactive (piped) modes.
+ * - TTY: shows the question, reads from terminal
+ * - No-TTY: reads a single line from stdin (for agent piped input)
+ */
 async function promptInput(prompt: string, hidden: boolean = false): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const stdin = process.stdin;
 
+  // Non-interactive: read a line from stdin pipe
+  if (!stdin.isTTY) {
+    const rl = createInterface({ input: stdin });
+    return new Promise((resolve) => {
+      rl.question('', (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+  }
+
+  // Interactive: show prompt
   return new Promise((resolve) => {
     if (hidden) {
-      // For password: write prompt manually, mute output
       process.stderr.write(prompt);
-      const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
-      if (stdin.isTTY) stdin.setRawMode(true);
+      if (stdin.setRawMode) stdin.setRawMode(true);
       let input = '';
       const onData = (ch: Buffer) => {
         const c = ch.toString('utf-8');
-        if (c === '\n' || c === '\r') {
+        if (c === '\n' || c === '\r' || c === '\u0004') {
           stdin.removeListener('data', onData);
-          if (stdin.isTTY && wasRaw !== undefined) stdin.setRawMode(wasRaw);
+          if (stdin.setRawMode && wasRaw !== undefined) stdin.setRawMode(wasRaw);
           process.stderr.write('\n');
-          rl.close();
           resolve(input);
         } else if (c === '\u0003') {
-          // Ctrl+C
-          rl.close();
           process.exit(1);
         } else if (c === '\u007F' || c === '\b') {
-          // Backspace
           input = input.slice(0, -1);
         } else {
           input += c;
@@ -40,6 +47,7 @@ async function promptInput(prompt: string, hidden: boolean = false): Promise<str
       };
       stdin.on('data', onData);
     } else {
+      const rl = createInterface({ input: stdin, output: process.stderr });
       rl.question(prompt, (answer) => {
         rl.close();
         resolve(answer);
@@ -54,17 +62,91 @@ export function registerAuthCommand(program: Command): void {
     .description('Authentication management');
 
   auth
+    .command('send-verification')
+    .description('Send email verification code (step 1 of registration)')
+    .requiredOption('-e, --email <email>', 'Email address')
+    .action(async (opts: { email: string }) => {
+      try {
+        const currentConfig = loadConfig();
+        const client = new ApiClient(currentConfig);
+        const result = await client.sendVerification(opts.email);
+        printJson({ email: opts.email, sent: true, ...result });
+      } catch (err: unknown) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  auth
+    .command('register')
+    .description('Register a new ClawRent account')
+    .option('-e, --email <email>', 'Email address')
+    .option('-n, --name <name>', 'Display name')
+    .option('-p, --password <password>', 'Password (min 8 chars). If omitted, prompts interactively.')
+    .option('-c, --code <code>', '6-digit verification code. If omitted, sends code first and prompts.')
+    .action(async (opts: { email?: string; name?: string; password?: string; code?: string }) => {
+      try {
+        const currentConfig = loadConfig();
+        const client = new ApiClient(currentConfig);
+
+        const email = opts.email ?? await promptInput('Email: ');
+        const name = opts.name ?? await promptInput('Display name: ');
+        const password = opts.password ?? await promptInput('Password (min 8 chars): ', true);
+
+        if (password.length < 8) {
+          printError('Password must be at least 8 characters');
+          process.exit(1);
+        }
+
+        let verificationCode: string;
+
+        if (opts.code) {
+          verificationCode = opts.code;
+        } else {
+          // Interactive: send verification code first
+          printSuccess('Sending verification code to your email...');
+          await client.sendVerification(email);
+          printSuccess('Verification code sent! Check your inbox.');
+          verificationCode = await promptInput('Verification code: ');
+        }
+
+        const result = await client.registerUser({
+          email,
+          password,
+          name,
+          verificationCode,
+        });
+
+        // Save credentials (NO URLs per config separation principle)
+        saveConfig({
+          token: result.token,
+          apiKey: result.apiKey,
+          userId: result.user.id,
+          email: result.user.email,
+          name: result.user.name,
+        });
+
+        printJson({
+          success: true,
+          user: result.user,
+          token: result.token,
+          apiKey: result.apiKey,
+          configSaved: getConfigPath(),
+        });
+      } catch (err: unknown) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  auth
     .command('login')
     .description('Login to ClawRent platform')
     .option('-e, --email <email>', 'Email address')
     .option('-p, --password <password>', 'Password')
-    .option('--api-url <url>', 'Platform API URL')
-    .action(async (opts: { email?: string; password?: string; apiUrl?: string }) => {
+    .action(async (opts: { email?: string; password?: string }) => {
       try {
         const currentConfig = loadConfig();
-        const apiUrl = opts.apiUrl ?? currentConfig.apiUrl;
-        const wsUrl = deriveWsUrl(apiUrl);
-
         const email = opts.email ?? await promptInput('Email: ');
         const password = opts.password ?? await promptInput('Password: ', true);
 
@@ -73,11 +155,10 @@ export function registerAuthCommand(program: Command): void {
           process.exit(1);
         }
 
-        const client = new ApiClient({ ...currentConfig, apiUrl, wsUrl });
+        const client = new ApiClient(currentConfig);
         const result = await client.login(email, password);
 
-        // Save credentials (do NOT save apiUrl/wsUrl — they come from defaults or env vars,
-        // saving them would pin the config to a specific URL and break after default changes)
+        // Save credentials (do NOT save apiUrl/wsUrl — they come from defaults or env vars)
         saveConfig({
           token: result.token,
           userId: result.user.id,
@@ -85,8 +166,12 @@ export function registerAuthCommand(program: Command): void {
           name: result.user.name,
         });
 
-        printSuccess(`Logged in as ${result.user.name} (${result.user.email})`);
-        printSuccess(`Config saved to ${getConfigPath()}`);
+        printJson({
+          success: true,
+          user: result.user,
+          token: result.token,
+          configSaved: getConfigPath(),
+        });
       } catch (err: unknown) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -99,7 +184,7 @@ export function registerAuthCommand(program: Command): void {
     .action(() => {
       try {
         clearConfig();
-        printSuccess('Logged out. Config cleared.');
+        printJson({ success: true, message: 'Credentials cleared' });
       } catch (err: unknown) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);

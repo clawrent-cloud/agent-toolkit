@@ -6,18 +6,12 @@ import type { ProviderAgent } from '../provider-agent.js';
 export function registerProviderTools(server: McpServer, client: ApiClient, providerAgent: ProviderAgent): void {
   server.tool(
     'clawrent_register_agent',
-    'Register a new agent on the ClawRent platform',
+    'Register a new agent on the ClawRent platform (consumer by default). To become a provider, use clawrent_apply_provider after creation.',
     {
       name: z.string().describe('Agent name (1-100 chars)'),
       slug: z.string().describe('URL-friendly slug (lowercase, hyphens)'),
       description: z.string().describe('Agent description (10-500 chars)'),
       longDescription: z.string().optional().describe('Detailed description (max 5000 chars)'),
-      pricingModel: z.enum(['per_token', 'per_session', 'per_minute']).optional().describe('Pricing model (default: per_session)'),
-      priceAmount: z.string().optional().describe('Price amount (default: 1.00)'),
-      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
-      hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
-      approvalMode: z.enum(['manual', 'auto']).optional().describe('Session approval mode (default: manual)'),
-      maxConcurrentSessions: z.number().optional().describe('Max concurrent sessions (default: 5)'),
     },
     async (params) => {
       const data: Record<string, unknown> = {
@@ -26,12 +20,6 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
         description: params.description,
       };
       if (params.longDescription) data['longDescription'] = params.longDescription;
-      if (params.pricingModel) data['pricingModel'] = params.pricingModel;
-      if (params.priceAmount) data['priceAmount'] = params.priceAmount;
-      if (params.currency) data['currency'] = params.currency;
-      if (params.hostingType) data['hostingType'] = params.hostingType;
-      if (params.approvalMode) data['approvalMode'] = params.approvalMode;
-      if (params.maxConcurrentSessions) data['maxConcurrentSessions'] = params.maxConcurrentSessions;
 
       const result = await client.registerAgent(data);
       return {
@@ -41,13 +29,57 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
   );
 
   server.tool(
-    'clawrent_publish_agent',
-    'Publish an agent (changes status from draft to pending_review)',
+    'clawrent_apply_provider',
+    'Apply for provider role on an existing agent. Requires admin review.',
     {
       agentId: z.string().describe('Agent ID'),
+      pricingModel: z.enum(['per_token', 'per_session', 'per_minute']).optional().describe('Pricing model (default: per_session)'),
+      priceAmount: z.string().optional().describe('Price amount (default: 1.00)'),
+      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
+      hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
+      approvalMode: z.enum(['manual', 'auto']).optional().describe('Session approval mode (default: manual)'),
+      maxConcurrentSessions: z.number().optional().describe('Max concurrent sessions (default: 5)'),
+      maxConsumerSlots: z.number().optional().describe('Max consumer slots per session (default: 1)'),
     },
-    async ({ agentId }) => {
-      const result = await client.publishAgent(agentId);
+    async (params) => {
+      const data: Record<string, unknown> = {};
+      if (params.pricingModel) data['pricingModel'] = params.pricingModel;
+      if (params.priceAmount) data['priceAmount'] = params.priceAmount;
+      if (params.currency) data['currency'] = params.currency;
+      if (params.hostingType) data['hostingType'] = params.hostingType;
+      if (params.approvalMode) data['approvalMode'] = params.approvalMode;
+      if (params.maxConcurrentSessions) data['maxConcurrentSessions'] = params.maxConcurrentSessions;
+      if (params.maxConsumerSlots) data['maxConsumerSlots'] = params.maxConsumerSlots;
+
+      const result = await client.applyProvider(params.agentId, data);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'clawrent_publish_agent',
+    'Publish an agent for admin review (draft → pending_review). ⚠️ REQUIRES user confirmation before executing!',
+    {
+      agentId: z.string().describe('Agent ID'),
+      pricingModel: z.enum(['per_token', 'per_session', 'per_minute', 'fixed']).optional().describe('Pricing model (default: per_token)'),
+      priceAmount: z.string().optional().describe('Price amount (default: 0.05)'),
+      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
+      hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
+      approvalMode: z.enum(['auto', 'manual']).optional().describe('Session approval mode (default: manual)'),
+      transparencyLevel: z.enum(['opaque', 'moderate', 'transparent']).optional().describe('Transparency level (default: moderate)'),
+    },
+    async (params) => {
+      const data: Record<string, unknown> = {};
+      if (params.pricingModel) data['pricingModel'] = params.pricingModel;
+      if (params.priceAmount) data['priceAmount'] = params.priceAmount;
+      if (params.currency) data['currency'] = params.currency;
+      if (params.hostingType) data['hostingType'] = params.hostingType;
+      if (params.approvalMode) data['approvalMode'] = params.approvalMode;
+      if (params.transparencyLevel) data['transparencyLevel'] = params.transparencyLevel;
+
+      const result = await client.publishAgent(params.agentId, data);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -56,7 +88,7 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
 
   server.tool(
     'clawrent_activate_agent',
-    'Activate an agent (changes status from pending_review to active). Requires agent token and active WS connection.',
+    'Activate an agent after admin approval + WebSocket connected (goes online). ⚠️ REQUIRES user confirmation! Agent must have approved provider profile and active WebSocket connection.',
     {
       agentId: z.string().describe('Agent ID'),
     },
@@ -87,12 +119,12 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
     'clawrent_list_my_agents',
     'List agents owned by the current user',
     {
-      status: z.string().optional().describe('Filter by status (draft, pending_review, active, suspended)'),
+      roles: z.string().optional().describe('Filter by roles (consumer, both)'),
       page: z.number().optional().describe('Page number'),
       limit: z.number().optional().describe('Results per page'),
     },
-    async ({ status, page, limit }) => {
-      const result = await client.getMyAgents({ status, page, limit });
+    async ({ roles, page, limit }) => {
+      const result = await client.getMyAgents({ roles, page, limit });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -260,10 +292,11 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
             serving: true,
             agentId: providerAgent.currentAgentId,
             activeSessions: sessions.length,
-            sessions: sessions.map(s => ({
+            sessions: sessions.map((s) => ({
               sessionId: s.sessionId,
               taskDescription: s.taskDescription,
               consumerUserId: s.consumerUserId,
+              slotIndex: s.slotIndex,
             })),
           }, null, 2),
         }],

@@ -21,6 +21,19 @@ export class ApiClient {
 
   // --- Auth (no auth needed) ---
 
+  async sendVerification(email: string): Promise<{ message: string }> {
+    return this.request('POST', '/api/auth/send-verification', { email }, false);
+  }
+
+  async registerUser(input: {
+    email: string;
+    password: string;
+    name: string;
+    verificationCode: string;
+  }): Promise<{ user: { id: string; email: string; name: string; role: string }; token: string; apiKey: string }> {
+    return this.request('POST', '/api/auth/register', input, false);
+  }
+
   async login(email: string, password: string): Promise<{ user: { id: string; email: string; name: string; role: string }; token: string }> {
     return this.request('POST', '/api/auth/login', { email, password }, false);
   }
@@ -97,11 +110,11 @@ export class ApiClient {
     return this.request('POST', '/api/agents', data);
   }
 
-  async getMyAgents(query?: { page?: number; limit?: number; status?: string }): Promise<unknown> {
+  async getMyAgents(query?: { page?: number; limit?: number; roles?: string }): Promise<unknown> {
     const params = new URLSearchParams();
     if (query?.page) params.set('page', String(query.page));
     if (query?.limit) params.set('limit', String(query.limit));
-    if (query?.status) params.set('status', query.status);
+    if (query?.roles) params.set('roles', query.roles);
     const qs = params.toString();
     return this.request('GET', `/api/agents/my${qs ? `?${qs}` : ''}`);
   }
@@ -111,10 +124,16 @@ export class ApiClient {
     return this.request('GET', '/api/agents/me/agent');
   }
 
-  async publishAgent(agentId: string): Promise<unknown> {
-    return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/publish`);
+  async applyProvider(agentId: string, data: Record<string, unknown>): Promise<unknown> {
+    return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/apply-provider`, data);
   }
 
+  /** Publish agent — simplified apply-provider with defaults, submits for admin review */
+  async publishAgent(agentId: string, data?: Record<string, unknown>): Promise<unknown> {
+    return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/publish`, data ?? {});
+  }
+
+  /** Activate agent — verify admin-approved + WebSocket connected, then go online */
   async activateAgent(agentId: string): Promise<unknown> {
     return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/activate`);
   }
@@ -202,6 +221,45 @@ export class ApiClient {
 
   async health(): Promise<unknown> {
     return this.request('GET', '/api/health', undefined, false);
+  }
+
+  // --- Docs (MCP interface) ---
+
+  async getDocsTree(): Promise<unknown> {
+    return this.request('GET', '/api/mcp/docs/tree', undefined, false);
+  }
+
+  async getDocByPath(path: string): Promise<unknown> {
+    return this.request('GET', `/api/mcp/docs/by-path/${encodeURI(path)}`, undefined, false);
+  }
+
+  async searchDocs(query: string): Promise<unknown> {
+    const params = new URLSearchParams({ q: query });
+    return this.request('GET', `/api/mcp/docs/search?${params.toString()}`, undefined, false);
+  }
+
+  async getDoc(id: string): Promise<unknown> {
+    return this.request('GET', `/api/mcp/docs/${encodeURIComponent(id)}`, undefined, false);
+  }
+
+  async createDoc(data: { type: string; title: string; parentId?: string; content?: string; slug?: string; icon?: string }): Promise<unknown> {
+    return this.request('POST', '/api/mcp/docs', data);
+  }
+
+  async updateDoc(id: string, data: { title?: string; content?: string; changeSummary?: string }): Promise<unknown> {
+    return this.request('PATCH', `/api/mcp/docs/${encodeURIComponent(id)}`, data);
+  }
+
+  async deleteDoc(id: string): Promise<unknown> {
+    return this.request('DELETE', `/api/mcp/docs/${encodeURIComponent(id)}`);
+  }
+
+  async publishDoc(id: string): Promise<unknown> {
+    return this.request('POST', `/api/mcp/docs/${encodeURIComponent(id)}/publish`);
+  }
+
+  async unpublishDoc(id: string): Promise<unknown> {
+    return this.request('POST', `/api/mcp/docs/${encodeURIComponent(id)}/unpublish`);
   }
 
   // --- Private ---
