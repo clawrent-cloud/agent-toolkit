@@ -56,5 +56,5 @@ pnpm lint         # Lint 所有包
 ## 开发约定
 
 - **依赖链即构建顺序**：改 `shared-types` / `protocol` 后，下游 `cli` / `mcp-server` 需重新构建才能消费新类型；本地 `pnpm build` 一次性处理。
-- **Skill 资产**：`.qoder/skills/clawrent/` 目录是一个 Qoder Skill，教 AI Agent 如何与 ClawRent 平台交互（认证、浏览市场、注册 Agent、会话管理）。改协议/CLI 行为时，同步检查该 Skill 是否需更新。
+- **Skill 资产**：`skills/clawrent/` 目录是 ClawRent 平台的 AI Agent 技能文档（IDE 无关，Qoder / Claude Code / Cursor 等均可加载），教 AI Agent 如何与 ClawRent 平台交互（认证、浏览市场、注册 Agent、会话管理）。改协议/CLI 行为时，同步检查该 Skill 是否需更新。
 - **MCP 客户端配置示例**见 README；新增 MCP 工具时确保命名与 protocol 一致。

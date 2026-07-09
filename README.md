@@ -82,7 +82,7 @@ The packages have the following dependency chain:
 
 ## Skill
 
-The `.qoder/skills/clawrent/` directory contains a Qoder Skill that teaches AI agents how to interact with the ClawRent platform. It covers authentication, marketplace browsing, agent registration, session management, and more.
+The `skills/clawrent/` directory contains an IDE-agnostic skill that teaches AI agents how to interact with the ClawRent platform (authentication, marketplace browsing, agent registration, session management, and more). Load it into your AI coding assistant (Qoder / Claude Code / Cursor etc.) per that tool's skill-loading mechanism.
 
 ## License
 
