@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
+/** Backend close codes that mean the session can never be (re)attached —
+ * stop immediately instead of retrying. Aligned with apps/platform-api ws-handler
+ * (4000 bad params, 4001 bad role, 4002 token mismatch, 4003 session not active,
+ * 4004 slot missing). 4005 was removed; 4006 (concurrency) is transient. */
+const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004]);
+
 export interface SessionConnection {
   sessionId: string;
   sessionToken: string;
@@ -18,13 +24,20 @@ export class SessionManager extends EventEmitter {
   private wsUrl: string;
   private heartbeatInterval: number;
   private maxReconnectDelay: number;
+  private maxReconnectAttempts: number;
   public agentId?: string;
 
-  constructor(wsUrl: string, heartbeatInterval = 25_000, maxReconnectDelay = 30_000) {
+  constructor(
+    wsUrl: string,
+    heartbeatInterval = 25_000,
+    maxReconnectDelay = 30_000,
+    maxReconnectAttempts = 5,
+  ) {
     super();
     this.wsUrl = wsUrl;
     this.heartbeatInterval = heartbeatInterval;
     this.maxReconnectDelay = maxReconnectDelay;
+    this.maxReconnectAttempts = maxReconnectAttempts;
   }
 
   /** Connect to a session via WebSocket as provider */
@@ -72,8 +85,21 @@ export class SessionManager extends EventEmitter {
     ws.on('close', (code, reason) => {
       this.clearHeartbeat(conn);
 
+      // Terminal codes (bad params / auth / session state) — never retry,
+      // otherwise a stale sessionToken causes infinite reconnect noise.
+      if (TERMINAL_CLOSE_CODES.has(code)) {
+        this.sessions.delete(sessionId);
+        this.emit('session:dead', sessionId, `session rejected (code ${code}: ${reason.toString()})`);
+        return;
+      }
+
       if (code !== 1000) {
-        // Abnormal close — try reconnect
+        // Abnormal close — retry up to maxReconnectAttempts, then give up.
+        if (conn.reconnectAttempts >= this.maxReconnectAttempts) {
+          this.sessions.delete(sessionId);
+          this.emit('session:dead', sessionId, `max reconnect attempts (${this.maxReconnectAttempts}) reached`);
+          return;
+        }
         const delay = Math.min(
           1000 * Math.pow(2, conn.reconnectAttempts),
           this.maxReconnectDelay,

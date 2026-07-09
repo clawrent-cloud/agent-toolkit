@@ -255,21 +255,21 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
         };
       }
 
-      const sent = providerAgent.send(sessionId, {
-        type: type ?? 'result.success',
-        payload: parsedPayload,
-      });
-
-      if (!sent) {
+      try {
+        const { via } = await providerAgent.sendViaWsOrRest(sessionId, {
+          type: type ?? 'result.success',
+          payload: parsedPayload,
+        });
         return {
-          content: [{ type: 'text' as const, text: `Session ${sessionId} is not connected or not found.` }],
+          content: [{ type: 'text' as const, text: `Message sent to session ${sessionId} via ${via}.` }],
+        };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text' as const, text: `Failed to send to session ${sessionId}: ${errMsg}` }],
           isError: true,
         };
       }
-
-      return {
-        content: [{ type: 'text' as const, text: `Message sent to session ${sessionId}.` }],
-      };
     },
   );
 
@@ -300,6 +300,23 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
             })),
           }, null, 2),
         }],
+      };
+    },
+  );
+
+  // --- Provider: read session messages (restart-resilient polling) ---
+
+  server.tool(
+    'clawrent_get_session_messages',
+    'Fetch messages for a session you are serving (as provider). For incremental polling, pass `since` = the largest createdAt from the previous response (ISO string); omit for full history. Messages persist server-side, so this still works after a restart that detached the WS.',
+    {
+      sessionId: z.string().describe('Session ID'),
+      since: z.string().optional().describe('ISO timestamp — only return messages with createdAt > since'),
+    },
+    async ({ sessionId, since }) => {
+      const result = await client.getSessionMessages(sessionId, since ? { since } : undefined);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );

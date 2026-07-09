@@ -96,8 +96,30 @@ export class ApiClient {
     return this.request('GET', `/api/sessions/${encodeURIComponent(sessionId)}`);
   }
 
-  async getSessionMessages(sessionId: string): Promise<unknown> {
-    return this.request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+  async getSessionMessages(
+    sessionId: string,
+    options?: { since?: string; limit?: number },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (options?.since) params.set('since', options.since);
+    if (options?.limit) params.set('limit', String(options.limit));
+    const qs = params.toString();
+    return this.request(
+      'GET',
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  /** POST a message via REST (WS fallback, e.g. session not attached after restart). */
+  async sendSessionMessage(
+    sessionId: string,
+    body: { type: string; payload: Record<string, unknown> },
+  ): Promise<unknown> {
+    return this.request(
+      'POST',
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+      body,
+    );
   }
 
   async endSession(sessionId: string): Promise<unknown> {

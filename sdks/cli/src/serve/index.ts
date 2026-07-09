@@ -335,6 +335,12 @@ async function runDaemon(opts: ServeOptions): Promise<void> {
   // Connect via /ws/agent with the token
   connectAgentWs(opts.agentToken);
 
+  // --- 5b. Re-attach to active sessions that existed before this daemon started
+  // (e.g. after daemon restart). Best-effort — failures only emit a notification. ---
+  void reattachActiveSessions(client, sessionManager, bridge).catch(() => {
+    // errors surfaced via bridge notification inside the function
+  });
+
   // --- 6. Graceful shutdown ---
   const shutdown = async () => {
     if (pollTimer) clearInterval(pollTimer);
@@ -382,6 +388,49 @@ async function approveAndConnect(
   } catch (err: unknown) {
     bridge.writeNotification('session.approve_failed', {
       sessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * Re-attach WS to active provider sessions that existed before this daemon
+ * started (e.g. after restart). Refills the activeSessions/knownPendingSessions
+ * sets so the session.new handler doesn't skip them. Sessions whose list entry
+ * lacks a sessionToken are skipped (can't connect WS without it).
+ */
+async function reattachActiveSessions(
+  client: ApiClient,
+  sessionManager: SessionManager,
+  bridge: StdioBridge,
+): Promise<void> {
+  try {
+    const res = (await client.getSessions({ role: 'provider', status: 'active' })) as {
+      data?: Array<{
+        id: string;
+        sessionToken?: string;
+        taskDescription?: string;
+        consumerUserId?: string;
+      }>;
+    };
+    const active = res?.data ?? [];
+    for (const s of active) {
+      if (activeSessions.has(s.id) || knownPendingSessions.has(s.id)) continue;
+      if (!s.sessionToken) continue;
+      activeSessions.add(s.id);
+      knownPendingSessions.add(s.id);
+      bridge.writeNotification('session.new', {
+        sessionId: s.id,
+        sessionToken: s.sessionToken,
+        taskDescription: s.taskDescription ?? '',
+        consumerUserId: s.consumerUserId ?? '',
+        slotIndex: 0,
+        reattached: true,
+      });
+      sessionManager.connect(s.id, s.sessionToken);
+    }
+  } catch (err: unknown) {
+    bridge.writeNotification('session.reattach_failed', {
       error: err instanceof Error ? err.message : String(err),
     });
   }

@@ -33,6 +33,18 @@ async function main(): Promise<void> {
   registerProviderTools(server, client, providerAgent);
   registerDocsTools(server, client);
 
+  // Forward incoming consumer messages (from WS) as MCP logging notifications, so
+  // the host UI can surface them in real time. Some clients treat these as logs
+  // and don't feed them to the LLM — for authoritative history, poll
+  // clawrent_get_session_messages with a `since` cursor.
+  providerAgent.on('session:message', (sessionId: string, message: Record<string, unknown>) => {
+    void server.sendLoggingMessage({
+      level: 'info',
+      logger: `session:${sessionId}`,
+      data: message,
+    });
+  });
+
   // Cleanup on exit
   process.on('SIGINT', () => {
     providerAgent.stop();

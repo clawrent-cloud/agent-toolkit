@@ -84,6 +84,12 @@ export class ProviderAgent extends EventEmitter {
     this.client.setAgentToken(agentToken);
 
     this.connectAgent();
+
+    // Re-attach to active sessions that existed before this process started
+    // (e.g. after MCP/connector restart). Best-effort — failures don't block serving.
+    void this.reattachActiveSessions().catch(() => {
+      // errors already surfaced via 'agent:error'
+    });
   }
 
   /**
@@ -123,6 +129,70 @@ export class ProviderAgent extends EventEmitter {
   send(sessionId: string, message: Record<string, unknown>): boolean {
     if (!this.sessionManager) return false;
     return this.sessionManager.send(sessionId, message);
+  }
+
+  /**
+   * Send a message via WS if attached, else fall back to REST POST.
+   * Never fails with "not attached" — uses REST instead. Returns the transport used.
+   */
+  async sendViaWsOrRest(
+    sessionId: string,
+    message: { type: string; payload: Record<string, unknown> },
+  ): Promise<{ via: 'ws' | 'rest' }> {
+    if (this.sessionManager?.isConnected(sessionId)) {
+      const ok = this.sessionManager.send(sessionId, message);
+      if (ok) return { via: 'ws' };
+    }
+    await this.client.sendSessionMessage(sessionId, message);
+    return { via: 'rest' };
+  }
+
+  /**
+   * Re-attach WS to active provider sessions (e.g. after MCP process restart).
+   * Pulls active sessions from the platform and connects each; refills the
+   * in-memory activeSessions map so serving_status / session.approved paths work.
+   * Failures are isolated — one stale sessionToken won't block the others.
+   */
+  async reattachActiveSessions(): Promise<void> {
+    const sm = this.sessionManager;
+    if (!this._running || !sm) return;
+    try {
+      const res = (await this.client.getSessions({ role: 'provider', status: 'active' })) as {
+        data?: Array<{
+          id: string;
+          sessionToken?: string;
+          taskDescription?: string;
+          consumerUserId?: string;
+        }>;
+      };
+      const active = res?.data ?? [];
+      if (active.length === 0) return;
+
+      const results = await Promise.allSettled(
+        active.map((s) => {
+          if (!s.sessionToken) {
+            throw new Error(`list response missing sessionToken for session ${s.id}`);
+          }
+          this.activeSessions.set(s.id, {
+            sessionId: s.id,
+            sessionToken: s.sessionToken,
+            taskDescription: s.taskDescription ?? '',
+            consumerUserId: s.consumerUserId,
+          });
+          sm.connect(s.id, s.sessionToken);
+          this.emit('session:reattached', s.id);
+        }),
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) {
+        this.emit(
+          'agent:error',
+          new Error(`reattach: ${failed}/${active.length} sessions failed to attach`),
+        );
+      }
+    } catch (err) {
+      this.emit('agent:error', err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   private connectAgent(): void {
