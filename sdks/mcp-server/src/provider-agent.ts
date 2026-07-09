@@ -78,6 +78,11 @@ export class ProviderAgent extends EventEmitter {
       this.emit('session:disconnected', sessionId);
     });
 
+    // Route REST calls (approve/list/end + internal autoApprove) through the
+    // agent token — the backend resolves agt_clawrent_* to the agent owner,
+    // so provider tools work without a separate user JWT login.
+    this.client.setAgentToken(agentToken);
+
     this.connectAgent();
   }
 
@@ -107,6 +112,7 @@ export class ProviderAgent extends EventEmitter {
     this.activeSessions.clear();
     this.agentId = null;
     this.agentToken = null;
+    this.client.setAgentToken(null);
 
     this.emit('stopped');
   }

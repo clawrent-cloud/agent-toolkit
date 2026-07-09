@@ -2,9 +2,23 @@ import type { ClawRentConfig } from './config.js';
 
 export class ApiClient {
   private config: ClawRentConfig;
+  /** When set (e.g. by ProviderAgent.start), overrides config.token for REST auth. */
+  private agentTokenOverride: string | null = null;
 
   constructor(config: ClawRentConfig) {
     this.config = config;
+  }
+
+  /**
+   * Set a token that overrides config.token for subsequent REST requests.
+   * Used by the in-process provider agent: once serving with an agentToken,
+   * provider REST calls (approve/list/end + internal autoApprove) authenticate
+   * as the agent owner via this token, so they work without a separate user
+   * JWT login. The backend's resolveAuth accepts the agt_clawrent_* prefix.
+   * Pass null to clear (e.g. on stop_serving).
+   */
+  setAgentToken(token: string | null): void {
+    this.agentTokenOverride = token;
   }
 
   get apiUrl(): string {
@@ -273,7 +287,9 @@ export class ApiClient {
     }
 
     if (requireAuth) {
-      if (this.config.token) {
+      if (this.agentTokenOverride) {
+        headers['Authorization'] = `Bearer ${this.agentTokenOverride}`;
+      } else if (this.config.token) {
         headers['Authorization'] = `Bearer ${this.config.token}`;
       } else if (this.config.apiKey) {
         headers['x-api-key'] = this.config.apiKey;
