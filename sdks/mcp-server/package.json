@@ -5,12 +5,14 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "clawrent-mcp": "./dist/index.js"
+    "clawrent-mcp": "dist/index.js"
   },
   "files": [
     "dist"
   ],
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "pnpm build",

@@ -5,7 +5,7 @@
   "main": "./dist/lib.js",
   "types": "./dist/lib.d.ts",
   "bin": {
-    "clawrent": "./dist/index.js"
+    "clawrent": "dist/index.js"
   },
   "exports": {
     ".": {
@@ -16,7 +16,9 @@
   "files": [
     "dist"
   ],
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "pnpm build",
