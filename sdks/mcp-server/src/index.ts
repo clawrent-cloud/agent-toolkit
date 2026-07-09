@@ -11,6 +11,14 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const client = new ApiClient(config);
 
+  // Provider mode via env: if CLAWRENT_AGENT_TOKEN is set, use it for all REST
+  // calls (approve/list/end/balance) without needing clawrent_start_serving.
+  // start_serving's agentToken parameter still overrides this at runtime.
+  const agentTokenEnv = process.env['CLAWRENT_AGENT_TOKEN'];
+  if (agentTokenEnv) {
+    client.setAgentToken(agentTokenEnv);
+  }
+
   // In-process provider agent (shared singleton across all provider tools)
   const providerAgent = new ProviderAgent(client);
 
