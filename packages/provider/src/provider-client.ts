@@ -58,6 +58,16 @@ export class ProviderClient extends EventEmitter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _running = false;
   private readonly activeSessions = new Map<string, ActiveSession>();
+  /**
+   * Per-session in-flight promise chain: each `session:message` for the same
+   * sessionId is chained onto the previous one so calls serialize. Without this,
+   * two socket frames arriving in the same tick would both pass the cursor
+   * dedupe check (the first call's `cursor.set` is queued behind its `await`
+   * and hasn't run when the second call reads the cursor) and onMessage would
+   * fire twice. The Map entry is cleared when the tail settles so it doesn't
+   * grow unbounded.
+   */
+  private readonly inflight = new Map<string, Promise<void>>();
   /** Callbacks captured at start(); used by handleAgentMessage/handleSessionMessage. */
   private boundCallbacks: ProviderCallbacks | null = null;
 
@@ -126,7 +136,20 @@ export class ProviderClient extends EventEmitter {
     sm.on('session:connected', (sid: string) => this.emit('session:connected', sid));
     sm.on('session:disconnected', (sid: string, reason: string) => this.emit('session:disconnected', sid, reason));
     sm.on('session:message', (sid: string, message: Record<string, unknown>) => {
-      void this.handleSessionMessage(sid, message);
+      // Per-session serialization: chain this call onto the previous one for
+      // the same sessionId so two frames arriving in the same tick do not both
+      // pass the cursor dedupe check inside handleSessionMessage. The .catch
+      // also covers Fix 3 — if a cursor-op (cursor.get/set) itself throws, the
+      // rejection is caught here and surfaced as session:error instead of
+      // becoming an unhandled rejection.
+      const prev = this.inflight.get(sid) ?? Promise.resolve();
+      const next = prev
+        .then(() => this.handleSessionMessage(sid, message))
+        .catch(err => { this.emit('session:error', sid, err); });
+      this.inflight.set(sid, next);
+      next.finally(() => {
+        if (this.inflight.get(sid) === next) this.inflight.delete(sid);
+      });
     });
     sm.on('session:dead', (sid: string, reason: string) => {
       const active = this.activeSessions.get(sid) ?? { sessionId: sid, sessionToken: '' };
@@ -222,7 +245,7 @@ export class ProviderClient extends EventEmitter {
       case 'system.heartbeat_ack':
         return; // heartbeat acknowledgement — ignore
       case 'system.error':
-        this.emit('agent:warning', `server error: ${JSON.stringify(payload)}`);
+        this.emit('agent:warning', `server error: ${JSON.stringify(payload) ?? 'no payload'}`);
         return;
       case 'agent.connected':
         this.emit('agent:connected', payload);
@@ -301,13 +324,19 @@ export class ProviderClient extends EventEmitter {
    * the host's onMessage callback. Public (no underscore prefix) so the
    * integration test can drive the cursor/dedupe path directly as a hook.
    *
-   * The cursor is advanced BEFORE the await on onMessage so that two deliveries
-   * of the same frame in the same tick (e.g. a WS redelivery) collapse to a
-   * single onMessage call. Tradeoff: if onMessage throws, the cursor is already
-   * advanced and this mechanism will not redeliver — hosts needing stronger
-   * at-least-once semantics should retry via REST. `createdAt` is canonical UTC
-   * ISO, taken from `_meta.timestamp` (backend pushes ISO `...Z`) with a
-   * `new Date(message.timestamp).toISOString()` fallback (ms epoch).
+   * At-least-once invariant (Task 6b fix round 1): the cursor is advanced ONLY
+   * AFTER `await onMessage` completes successfully. If onMessage throws, the
+   * cursor is left un-advanced and `session:error` is emitted — so a future
+   * redelivery (e.g. backend replay on restart) will pass the dedupe check and
+   * re-process the message. onMessage MUST be idempotent precisely because of
+   * this redelivery semantics. The per-session in-flight chain in
+   * `bindSessionManager`'s `session:message` handler serializes concurrent
+   * frames for the same session so the cursor-after-success commit has a chance
+   * to run before the next frame's dedupe check reads the cursor.
+   *
+   * `createdAt` is canonical UTC ISO, taken from `_meta.timestamp` (backend
+   * pushes ISO `...Z`) with a `new Date(message.timestamp).toISOString()`
+   * fallback (ms epoch).
    */
   async handleSessionMessage(sessionId: string, message: Record<string, unknown>): Promise<void> {
     const onMessage = this.boundCallbacks?.onMessage;
@@ -326,14 +355,16 @@ export class ProviderClient extends EventEmitter {
     const last = this.cursor.get(sessionId);
     if (last && createdAt <= last) return; // already processed (dedupe)
 
-    this.cursor.set(sessionId, createdAt); // advance FIRST (sync dedupe)
-
     const session = this.activeSessions.get(sessionId) ?? { sessionId, sessionToken: '' };
     try {
       await onMessage(session, message);
     } catch (err) {
+      // Do NOT advance the cursor: a future redelivery must re-process this
+      // message (at-least-once across the onMessage failure).
       this.emit('session:error', sessionId, err);
+      return;
     }
+    this.cursor.set(sessionId, createdAt); // success → advance + persist
   }
 
   stop(): void {
