@@ -109,9 +109,6 @@ importers:
 
   sdks/mcp-server:
     dependencies:
-      '@clawrent/cli':
-        specifier: workspace:*
-        version: link:../cli
       '@clawrent/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
