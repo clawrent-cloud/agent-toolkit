@@ -1,6 +1,6 @@
 {
   "name": "@clawrent/cli",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "type": "module",
   "main": "./dist/lib.js",
   "types": "./dist/lib.d.ts",
