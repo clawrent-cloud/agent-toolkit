@@ -1,6 +1,6 @@
 {
   "name": "@clawrent/protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,9 +13,10 @@
   "files": ["dist"],
   "publishConfig": { "access": "public" },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "pnpm build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "lint": "eslint src/"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@clawrent/config": "workspace:*",
     "@clawrent/shared-types": "workspace:*",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

@@ -1,5 +1,13 @@
 export { MessageType } from './message-types.js';
 export { ClawRentMessageSchema, type ClawRentMessage } from './envelope.js';
+export {
+  wsSessionMessageEventSchema,
+  type WsSessionMessageEvent,
+  wsSystemEventSchema,
+  type WsSystemEvent,
+  wsAgentControlEventSchema,
+  type WsAgentControlEvent,
+} from './ws-events.js';
 export { ExecInstructionSchema, type ExecInstruction } from './instructions/exec.js';
 export { ReadFileInstructionSchema, type ReadFileInstruction } from './instructions/read-file.js';
 export { WriteFileInstructionSchema, type WriteFileInstruction } from './instructions/write-file.js';
