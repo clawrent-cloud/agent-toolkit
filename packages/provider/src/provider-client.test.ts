@@ -231,3 +231,28 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
     c.stop();
   });
 });
+
+describe('ProviderClient.send', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(() => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => {
+    wss.close();
+  });
+
+  it('returns via:rest when no session WS (REST fallback)', async () => {
+    // stub sendSessionMessage to avoid real HTTP
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+    });
+    c['client'].sendSessionMessage = async () => ({ delivered: true }) as never;
+    const res = await c.send('sess-1', { type: 'dialogue.message', payload: { content: 'hi' } });
+    expect(res.via).toBe('rest');
+  });
+});

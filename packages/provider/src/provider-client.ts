@@ -367,6 +367,32 @@ export class ProviderClient extends EventEmitter {
     this.cursor.set(sessionId, createdAt); // success → advance + persist
   }
 
+  /**
+   * Send an outbound message to a session. Prefers the /ws/session socket when
+   * it is OPEN (low latency, no HTTP overhead); falls back to the REST
+   * `POST /api/sessions/:id/messages` endpoint when the socket is absent or not
+   * yet open (e.g. before start(), during reconnect, or for sessions not yet
+   * attached). Returns the transport actually used so callers can observe it.
+   *
+   * Note: this method does NOT throw when WS is unavailable — it silently falls
+   * back to REST. REST errors propagate to the caller as-is.
+   */
+  async send(
+    sessionId: string,
+    message: { type: string; payload: Record<string, unknown> },
+  ): Promise<{ via: 'ws' | 'rest' }> {
+    // Local binding so TS narrows `sm` to NonNullable inside the if-block
+    // (this.sessionManager is mutable class state and isn't narrowed by `?.`).
+    const sm = this.sessionManager;
+    if (sm?.isConnected(sessionId)) {
+      const ok = sm.send(sessionId, message);
+      if (ok) return { via: 'ws' };
+    }
+    // REST fallback
+    await this.client.sendSessionMessage(sessionId, message);
+    return { via: 'rest' };
+  }
+
   stop(): void {
     this._running = false;
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
