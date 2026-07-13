@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { ApiClient } from '@clawrent/cli';
+import type { ApiClient } from '@clawrent/provider';
 import type { ProviderAgent } from '../provider-agent.js';
 
 export function registerProviderTools(server: McpServer, client: ApiClient, providerAgent: ProviderAgent): void {

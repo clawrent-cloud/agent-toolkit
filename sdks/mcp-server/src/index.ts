@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ApiClient, loadConfig } from '@clawrent/cli';
+import { ApiClient, loadConfig } from '@clawrent/provider';
 import { ProviderAgent } from './provider-agent.js';
 import { registerAuthTools } from './tools/auth-tools.js';
 import { registerConsumerTools } from './tools/consumer-tools.js';

@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { ApiClient } from '@clawrent/cli';
+import type { ApiClient } from '@clawrent/provider';
 
 export function registerConsumerTools(server: McpServer, client: ApiClient): void {
   // --- Marketplace ---
