@@ -40,6 +40,8 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       approvalMode: z.enum(['manual', 'auto']).optional().describe('Session approval mode (default: manual)'),
       maxConcurrentSessions: z.number().optional().describe('Max concurrent sessions (default: 5)'),
       maxConsumerSlots: z.number().optional().describe('Max consumer slots per session (default: 1)'),
+      endpoint: z.string().url().optional().describe('External runtime endpoint URL (self-hosted providers)'),
+      healthCheckUrl: z.string().url().optional().describe('Health check URL the platform may poll'),
     },
     async (params) => {
       const data: Record<string, unknown> = {};
@@ -50,6 +52,8 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       if (params.approvalMode) data['approvalMode'] = params.approvalMode;
       if (params.maxConcurrentSessions) data['maxConcurrentSessions'] = params.maxConcurrentSessions;
       if (params.maxConsumerSlots) data['maxConsumerSlots'] = params.maxConsumerSlots;
+      if (params.endpoint) data['endpoint'] = params.endpoint;
+      if (params.healthCheckUrl) data['healthCheckUrl'] = params.healthCheckUrl;
 
       const result = await client.applyProvider(params.agentId, data);
       return {
@@ -69,6 +73,8 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
       approvalMode: z.enum(['auto', 'manual']).optional().describe('Session approval mode (default: manual)'),
       transparencyLevel: z.enum(['opaque', 'moderate', 'transparent']).optional().describe('Transparency level (default: moderate)'),
+      endpoint: z.string().url().optional().describe('External runtime endpoint URL (self-hosted providers)'),
+      healthCheckUrl: z.string().url().optional().describe('Health check URL the platform may poll'),
     },
     async (params) => {
       const data: Record<string, unknown> = {};
@@ -78,6 +84,8 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       if (params.hostingType) data['hostingType'] = params.hostingType;
       if (params.approvalMode) data['approvalMode'] = params.approvalMode;
       if (params.transparencyLevel) data['transparencyLevel'] = params.transparencyLevel;
+      if (params.endpoint) data['endpoint'] = params.endpoint;
+      if (params.healthCheckUrl) data['healthCheckUrl'] = params.healthCheckUrl;
 
       const result = await client.publishAgent(params.agentId, data);
       return {
