@@ -1,11 +1,9 @@
 import { Command } from 'commander';
 import WebSocket from 'ws';
-import { loadConfig } from '../config.js';
-import { ApiClient } from '../api-client.js';
+import { ApiClient, loadConfig, SessionManager } from '@clawrent/provider';
 import { printError, printSuccess } from '../output.js';
 import { isDaemonRunning, spawnDaemon, writePid, getLogFilePath } from '../daemon.js';
 import { StdioBridge } from './stdio-bridge.js';
-import { SessionManager } from './session-manager.js';
 import {
   createCorrelationId,
   isResponse,

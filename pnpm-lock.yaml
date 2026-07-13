@@ -78,6 +78,9 @@ importers:
       '@clawrent/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@clawrent/provider':
+        specifier: workspace:*
+        version: link:../../packages/provider
       '@clawrent/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

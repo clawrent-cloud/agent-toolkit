@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, unlinkSync, openSync, closeSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { spawn } from 'node:child_process';
-import { getConfigDir } from './config.js';
+import { getConfigDir } from '@clawrent/provider';
 
 export function getPidFilePath(agentId: string): string {
   return join(getConfigDir(), `serve-${agentId}.pid`);

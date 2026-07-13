@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@clawrent/protocol": "workspace:*",
+    "@clawrent/provider": "workspace:*",
     "@clawrent/shared-types": "workspace:*",
     "commander": "^13.0.0",
     "ws": "^8.18.0"

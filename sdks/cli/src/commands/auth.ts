@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { createInterface } from 'node:readline';
-import { loadConfig, saveConfig, clearConfig, getConfigPath } from '../config.js';
-import { ApiClient } from '../api-client.js';
+import { ApiClient, loadConfig, saveConfig, clearConfig, getConfigPath } from '@clawrent/provider';
 import { printJson, printError, printSuccess } from '../output.js';
 
 /**

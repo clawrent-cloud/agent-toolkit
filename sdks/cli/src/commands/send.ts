@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import WebSocket from 'ws';
-import { loadConfig } from '../config.js';
-import { ApiClient } from '../api-client.js';
+import { ApiClient, loadConfig } from '@clawrent/provider';
 import { printJson, printError, printSuccess } from '../output.js';
 
 export function registerSendCommand(program: Command): void {

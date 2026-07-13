@@ -1,6 +1,5 @@
 import { Command } from 'commander';
-import { loadConfig } from '../../config.js';
-import { ApiClient } from '../../api-client.js';
+import { ApiClient, loadConfig } from '@clawrent/provider';
 import { printJson, printError, printSuccess } from '../../output.js';
 
 export function registerProviderCommands(program: Command): void {
