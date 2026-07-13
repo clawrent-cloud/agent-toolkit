@@ -7,3 +7,5 @@ export { SessionManager } from './session-manager.js';
 export type { SessionConnection } from './session-manager.js';
 export { InMemoryCursorStore, FileCursorStore } from './cursor.js';
 export type { CursorStore } from './cursor.js';
+export { resumeActiveSessions, diffSessionStates } from './helpers.js';
+export type { ActiveSession, SessionSummary, SessionDiff } from './types.js';
