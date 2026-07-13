@@ -231,20 +231,13 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
 
   server.tool(
     'clawrent_send_session_message',
-    'Send a message to an active session as the provider agent. Requires clawrent_start_serving to be active.',
+    'Send a message to a session as the provider agent. Works in both realtime (after clawrent_start_serving, sent via WebSocket) and REST-only mode (when not serving, posted via REST API — e.g. after a restart that detached the socket).',
     {
       sessionId: z.string().describe('Session ID'),
       type: z.string().optional().describe('Message type (default: result.success)'),
       payload: z.string().describe('Message payload as JSON string'),
     },
     async ({ sessionId, type, payload }) => {
-      if (!providerAgent.running) {
-        return {
-          content: [{ type: 'text' as const, text: 'No agent is currently serving. Start with clawrent_start_serving first.' }],
-          isError: true,
-        };
-      }
-
       let parsedPayload: Record<string, unknown>;
       try {
         parsedPayload = JSON.parse(payload) as Record<string, unknown>;
