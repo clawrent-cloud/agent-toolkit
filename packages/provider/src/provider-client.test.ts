@@ -256,3 +256,68 @@ describe('ProviderClient.send', () => {
     expect(res.via).toBe('rest');
   });
 });
+
+describe('ProviderClient.sendTyping', () => {
+  // Baseline well above 0 so the first send (last=0) clears the debounce
+  // window, as it does with real epoch-ms timestamps (where Date.now() is large).
+  const T0 = 1_700_000_000_000;
+  let client: ProviderClient;
+  let mockSm: { isConnected: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    client = new ProviderClient({ agentToken: 'agt_test' });
+    mockSm = {
+      isConnected: vi.fn().mockReturnValue(true),
+      send: vi.fn().mockReturnValue(true),
+    };
+    // Inject a mock SessionManager (private at the type level; runtime-accessible).
+    (client as unknown as { sessionManager: unknown }).sessionManager = mockSm;
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns false and does not send when the session socket is not OPEN', () => {
+    mockSm.isConnected.mockReturnValue(false);
+    expect(client.sendTyping('s1')).toBe(false);
+    expect(mockSm.send).not.toHaveBeenCalled();
+  });
+
+  it('returns false when no SessionManager is attached (before start)', () => {
+    const fresh = new ProviderClient({ agentToken: 'agt_test' });
+    // sessionManager is null until start() — sendTyping must no-op, not throw.
+    expect(fresh.sendTyping('s1')).toBe(false);
+  });
+
+  it('sends a dialogue.typing frame and returns true when connected', () => {
+    expect(client.sendTyping('s1')).toBe(true);
+    expect(mockSm.send).toHaveBeenCalledTimes(1);
+    expect(mockSm.send).toHaveBeenCalledWith('s1', {
+      type: 'dialogue.typing',
+      payload: {},
+    });
+  });
+
+  it('debounces to one send per 500ms per session', () => {
+    expect(client.sendTyping('s1')).toBe(true); // t=T0 → sends (T0-0 > 500)
+    vi.setSystemTime(T0 + 100);
+    expect(client.sendTyping('s1')).toBe(false); // suppressed (100 < 500)
+    vi.setSystemTime(T0 + 499);
+    expect(client.sendTyping('s1')).toBe(false); // still suppressed (499 < 500)
+    vi.setSystemTime(T0 + 500);
+    expect(client.sendTyping('s1')).toBe(true); // exactly 500ms → sends again
+    expect(mockSm.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('tracks the debounce window per session independently', () => {
+    expect(client.sendTyping('s1')).toBe(true); // t=T0, s1
+    vi.setSystemTime(T0 + 100);
+    expect(client.sendTyping('s2')).toBe(true); // t=T0+100, s2 — different session, not suppressed
+    expect(mockSm.send).toHaveBeenCalledTimes(2);
+    expect(mockSm.send).toHaveBeenNthCalledWith(1, 's1', { type: 'dialogue.typing', payload: {} });
+    expect(mockSm.send).toHaveBeenNthCalledWith(2, 's2', { type: 'dialogue.typing', payload: {} });
+  });
+});
