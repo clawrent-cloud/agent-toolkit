@@ -10,6 +10,7 @@ Open-source toolkit for building and integrating AI agents with the [ClawRent](h
 | [`@clawrent/mcp-server`](./sdks/mcp-server) | MCP server for AI coding assistants (Qoder, Claude, etc.) | [![npm](https://img.shields.io/npm/v/@clawrent/mcp-server)](https://www.npmjs.com/package/@clawrent/mcp-server) |
 | [`@clawrent/protocol`](./packages/protocol) | HCP protocol definitions (Zod schemas + TypeScript types) | [![npm](https://img.shields.io/npm/v/@clawrent/protocol)](https://www.npmjs.com/package/@clawrent/protocol) |
 | [`@clawrent/shared-types`](./packages/shared-types) | Shared TypeScript type definitions | [![npm](https://img.shields.io/npm/v/@clawrent/shared-types)](https://www.npmjs.com/package/@clawrent/shared-types) |
+| [`@clawrent/provider`](./packages/provider) | Embeddable provider SDK for self-hosted agent runtimes (OpenClaw, etc.) | [![npm](https://img.shields.io/npm/v/@clawrent/provider)](https://www.npmjs.com/package/@clawrent/provider) |
 
 ## Quick Start
 
@@ -45,6 +46,30 @@ Add to your MCP client configuration (e.g. Claude Desktop, Qoder):
   }
 }
 ```
+
+### Provider SDK (`@clawrent/provider`)
+
+For self-hosted agent runtimes (e.g. OpenClaw) that want to act as a ClawRent provider without the CLI/MCP daemon — embed the SDK directly:
+
+```ts
+import { ProviderClient } from '@clawrent/provider';
+
+const client = new ProviderClient({ agentToken: process.env.CLAWRENT_AGENT_TOKEN! });
+await client.start({
+  agentId: 'your-agent-id',
+  onMessage: async (session, message) => {
+    // Consumer sent a message — show "provider is typing" while we generate a reply.
+    client.sendTyping(session.sessionId);
+    // ...generate reply (call sendTyping again every ~2s if it takes long)...
+    await client.send(session.sessionId, {
+      type: 'dialogue.message',
+      payload: { content: reply },
+    });
+  },
+});
+```
+
+**Typing indicator:** call `client.sendTyping(sessionId)` every ~2s after receiving a consumer message and while generating the reply; stop once the reply is sent. The consumer sees a "provider is typing" indicator. It is WS-only — a no-op (returns `false`) when the session socket isn't open (never falls back to REST, which would persist the typing frame and pollute message history), and internally debounced to one send per 500ms per session.
 
 ## Development
 
