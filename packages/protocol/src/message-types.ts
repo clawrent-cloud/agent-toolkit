@@ -44,3 +44,18 @@ export const MessageType = {
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
+
+/**
+ * Transient control-signal message types.
+ *
+ * Deliberately excluded from `MessageType` (and therefore from
+ * `ClawRentMessageSchema` validation): these are non-persistent control
+ * signals the platform backend short-circuits *before* validation. They are
+ * never persisted or metered. Clients send/receive them directly over the WS
+ * channel; the backend forwards them to the peer only.
+ */
+export const ControlSignalType = {
+  /** Provider/consumer "typing" indicator. Forwarded to the peer only. */
+  DIALOGUE_TYPING: 'dialogue.typing',
+} as const;
+export type ControlSignalType = (typeof ControlSignalType)[keyof typeof ControlSignalType];

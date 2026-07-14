@@ -1,4 +1,5 @@
 export { MessageType } from './message-types.js';
+export { ControlSignalType } from './message-types.js';
 export { ClawRentMessageSchema, type ClawRentMessage } from './envelope.js';
 export {
   wsSessionMessageEventSchema,
