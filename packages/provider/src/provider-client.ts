@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
-import { wsAgentControlEventSchema, type WsAgentControlEvent } from '@clawrent/protocol';
+import { ControlSignalType, wsAgentControlEventSchema, type WsAgentControlEvent } from '@clawrent/protocol';
 import { ApiClient } from './api-client.js';
 import type { ClawRentConfig } from './config.js';
 import { SessionManager } from './session-manager.js';
@@ -70,6 +70,10 @@ export class ProviderClient extends EventEmitter {
   private readonly inflight = new Map<string, Promise<void>>();
   /** Callbacks captured at start(); used by handleAgentMessage/handleSessionMessage. */
   private boundCallbacks: ProviderCallbacks | null = null;
+  /** Per-session last-sent timestamp for sendTyping debounce (guard against
+   * hosts calling in a tight loop; hosts wanting a steady indicator should
+   * call every ~2s — the peer clears the indicator after a 3s gap). */
+  private readonly lastTypingSent = new Map<string, number>();
 
   constructor(opts: ProviderClientOptions) {
     super();
@@ -391,6 +395,31 @@ export class ProviderClient extends EventEmitter {
     // REST fallback
     await this.client.sendSessionMessage(sessionId, message);
     return { via: 'rest' };
+  }
+
+  /**
+   * Send a transient "typing" indicator to a session. Fire-and-forget over the
+   * /ws/session socket ONLY — never REST (the REST POST /messages endpoint does
+   * NOT short-circuit dialogue.typing, so it would persist a typing row and
+   * pollute message history). The backend forwards the frame to the peer and
+   * skips validation/persistence/metering/ACK.
+   *
+   * Debounced to one send per 500ms per session as a guard against hosts
+   * calling in a tight loop. No-op (returns false) when the session socket is
+   * not OPEN or the call is suppressed by debounce; returns true when a typing
+   * frame was actually sent.
+   *
+   * Hosts control timing: call this periodically (every ~2s) after receiving a
+   * consumer message and while generating a reply; stop once the reply is sent.
+   */
+  sendTyping(sessionId: string): boolean {
+    const sm = this.sessionManager;
+    if (!sm?.isConnected(sessionId)) return false;
+    const now = Date.now();
+    const last = this.lastTypingSent.get(sessionId) ?? 0;
+    if (now - last < 500) return false;
+    this.lastTypingSent.set(sessionId, now);
+    return sm.send(sessionId, { type: ControlSignalType.DIALOGUE_TYPING, payload: {} });
   }
 
   stop(): void {
