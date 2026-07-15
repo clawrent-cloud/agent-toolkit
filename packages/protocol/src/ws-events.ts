@@ -57,6 +57,13 @@ export type WsSystemEvent = z.infer<typeof wsSystemEventSchema>;
  * Note: backend does NOT push `session.ended` on /ws/agent. Session terminations arrive
  * as `system.session_ended` on /ws/session (see wsSystemEventSchema).
  */
+export const guardrailDecisionSchema = z.object({
+  verdict: z.enum(['allow', 'block', 'advisory']),
+  categories: z.array(z.string()),
+  reason: z.string(),
+});
+export type GuardrailDecision = z.infer<typeof guardrailDecisionSchema>;
+
 export const wsAgentControlEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('session.new'),
@@ -68,6 +75,7 @@ export const wsAgentControlEventSchema = z.discriminatedUnion('type', [
       taskDescription: z.string().optional(),
       pricingSnapshot: z.unknown().optional(),
       orderId: z.string().optional(),
+      guardrailDecision: guardrailDecisionSchema.optional(),
       timestamp: z.string().optional(),
     }),
   }),

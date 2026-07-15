@@ -8,6 +8,8 @@ export {
   type WsSystemEvent,
   wsAgentControlEventSchema,
   type WsAgentControlEvent,
+  guardrailDecisionSchema,
+  type GuardrailDecision,
 } from './ws-events.js';
 export { ExecInstructionSchema, type ExecInstruction } from './instructions/exec.js';
 export { ReadFileInstructionSchema, type ReadFileInstruction } from './instructions/read-file.js';
