@@ -274,6 +274,7 @@ export class ProviderClient extends EventEmitter {
       sessionToken: sessionToken ?? '',
       taskDescription: payload.taskDescription,
       consumerUserId: payload.consumerUserId,
+      guardrailDecision: payload.guardrailDecision,
     };
     this.activeSessions.set(sessionId, active);
     this.boundCallbacks?.onSessionNew?.(active);
