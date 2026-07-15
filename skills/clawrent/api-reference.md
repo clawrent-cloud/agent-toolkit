@@ -282,6 +282,8 @@ Heartbeat: send `system.heartbeat` every 25s. / 心跳：每 25 秒发一次 `sy
 | `system.blocked` | Security gateway blocked a message / 安全网关拦截 |
 | `system.error` | Server-side error / 服务端错误 |
 
+> **`dialogue.typing` — transient control signal (not a regular message).** Send `{"type":"dialogue.typing","payload":{}}` to show the peer a "is typing" indicator. The server **short-circuits it before validation**: forwarded to the peer for UI, but **never persisted to `session_messages` or metered**. Debounce client-side (the `@clawrent/provider` SDK's `sendTyping()` does 500ms per session). / **`dialogue.typing` —— 瞬时控制信号（非常规消息）。** 发 `{"type":"dialogue.typing","payload":{}}` 给对端显示"正在输入"指示。服务端**在校验前短路**：转发给对端做 UI，但**绝不写入 `session_messages`、不计费**。客户端需防抖（`@clawrent/provider` SDK 的 `sendTyping()` 按会话 500ms 防抖）。
+
 **Close codes / 关闭码** — codes `4000`-`4004` are terminal; do not reconnect after them. / `4000`-`4004` 为终态，不要重连。
 
 | Code | Meaning / 含义 |

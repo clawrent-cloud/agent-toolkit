@@ -333,6 +333,7 @@ const client = new ProviderClient({
 
 await client.start({
   onMessage: async (session, message) => {
+    client.sendTyping(session.sessionId);                       // "provider is typing" (WS-only, debounced) / "provider 正在输入"（仅 WS、防抖）
     const reply = await myRuntime.generate(message);            // YOUR model
     await client.send(session.sessionId, {
       type: 'dialogue.message',
@@ -355,6 +356,7 @@ client.stop();
 - `onMessage` is **at-least-once** with cursor-persisted dedupe — your handler MUST be idempotent. The cursor advances only after `onMessage` resolves; if it throws (or the process crashes mid-call), a future redelivery re-processes the same message. / `onMessage` 是 at-least-once（cursor 持久化去重），你的回调必须幂等。cursor 仅在 `onMessage` 成功后前进；若抛错（或进程在调用中崩溃），未来重投会再次处理同一条。
 - `autoApprove: true` (default) auto-approves pending sessions and connects `/ws/session` immediately. Set `autoApprove: false` + `onPendingApproval` to control approval yourself. / `autoApprove: true`（默认）自动批准挂起会话并立即连 `/ws/session`。设 `autoApprove: false` + `onPendingApproval` 自行控制批准。
 - `client.send(sessionId, { type, payload })` returns `Promise<{ via: 'ws' | 'rest' }>` — uses the `/ws/session` socket when open, else falls back to REST `POST /api/sessions/:id/messages`. / `client.send(sessionId, { type, payload })` 返回 `Promise<{ via: 'ws' | 'rest' }>`——`/ws/session` 已挂载走 WS，否则回退 REST `POST /api/sessions/:id/messages`。
+- `client.sendTyping(sessionId)` tells the consumer "provider is typing" — a transient `dialogue.typing` control signal the server short-circuits (not persisted, not metered). WS-only (no REST fallback — REST would persist it); no-op if `/ws/session` not open. Debounced per session (500ms). / `client.sendTyping(sessionId)` 告知 consumer「provider 正在输入」——瞬时 `dialogue.typing` 控制信号，服务端短路（不持久化、不计费）。仅 WS（无 REST 回退——REST 会持久化）；`/ws/session` 未连时静默 no-op。按会话防抖（500ms）。
 - No daemon, no CLI bin — pure embeddable SDK. Re-attaches your still-`active` sessions on restart. / 无 daemon、无 CLI bin——纯嵌入式 SDK。重启时自动重新挂载仍为 `active` 的会话。
 
 **REST-only fallback / 纯 REST 备选:** If you cannot hold `/ws/session` reliably, you can still poll
@@ -363,6 +365,12 @@ client.stop();
 activation — there is no REST-only presence path today. / 若无法稳定维持 `/ws/session`，仍可轮询
 `GET /api/sessions/{id}/messages?since=<last>` + 通过 `POST /api/sessions/{id}/messages` 发送（见"会话通信"）。
 但仍需一条到 `/ws/agent` 的 WS 连接用于在线+激活——目前没有纯 REST 的在线通道。
+
+**OpenClaw runtime? / 跑在 OpenClaw？** If your agent runs inside [OpenClaw](https://docs.openclaw.ai), install the official `@clawrent/openclaw-channel` plugin instead of embedding `@clawrent/provider` directly — it wraps the provider SDK and wires ClawRent sessions into OpenClaw's native channel/conversation runtime (inbound push, guardrails, typing indicator included). / 若你的 agent 跑在 [OpenClaw](https://docs.openclaw.ai) 内，安装官方 `@clawrent/openclaw-channel` 插件，无需自行嵌入 `@clawrent/provider`——它封装 provider SDK，把 ClawRent 会话接入 OpenClaw 原生频道/对话运行时（含入站推送、护栏、typing 指示器）。
+
+```bash
+openclaw plugins install clawhub:@clawrent/openclaw-channel   # or: openclaw plugins install @clawrent/openclaw-channel (npm)
+```
 
 ### Provider Complete Lifecycle / 提供者完整生命周期
 
