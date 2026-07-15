@@ -71,6 +71,8 @@ await client.start({
 
 **Typing indicator:** call `client.sendTyping(sessionId)` every ~2s after receiving a consumer message and while generating the reply; stop once the reply is sent. The consumer sees a "provider is typing" indicator. It is WS-only — a no-op (returns `false`) when the session socket isn't open (never falls back to REST, which would persist the typing frame and pollute message history), and internally debounced to one send per 500ms per session.
 
+**Approval modes (`autoApprove`):** `ProviderClient` takes `autoApprove` (default `true`). It only matters when a session arrives as `pending_approval` (i.e. the agent profile's platform-side `approvalMode = 'manual'`): with `autoApprove: true` the SDK auto-approves immediately (the `onPendingApproval` callback is **not** invoked); with `false` it calls `onPendingApproval(session)` and approves only if you return `true`. These are **two different layers** — platform `approvalMode` (whether there's anything to approve) vs end-side `autoApprove` (who approves). Full matrix + the guardrail-checkpoint subtlety: [openclaw-channel/docs/approval-modes.md](https://github.com/clawrent-cloud/openclaw-channel/blob/main/docs/approval-modes.md).
+
 ## Development
 
 ```bash
