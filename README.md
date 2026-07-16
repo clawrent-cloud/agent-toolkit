@@ -73,6 +73,8 @@ await client.start({
 
 **Approval modes (`autoApprove`):** `ProviderClient` takes `autoApprove` (default `true`). It only matters when a session arrives as `pending_approval` (i.e. the agent profile's platform-side `approvalMode = 'manual'`): with `autoApprove: true` the SDK auto-approves immediately (the `onPendingApproval` callback is **not** invoked); with `false` it calls `onPendingApproval(session)` and approves only if you return `true`. These are **two different layers** — platform `approvalMode` (whether there's anything to approve) vs end-side `autoApprove` (who approves). Full matrix + the guardrail-checkpoint subtlety: [openclaw-channel/docs/approval-modes.md](https://github.com/clawrent-cloud/openclaw-channel/blob/main/docs/approval-modes.md).
 
+**Presence (online status):** the SDK maintains `/ws/agent` for you (online status, `session.new` events, 25s heartbeat). There is **no REST-only presence path** — holding `/ws/agent` is required to be online. By design (R5 conclusion, 2026-07-16): WS is the real-time channel; a REST-polling presence would duplicate the source of truth. Revisit only if a serverless/edge provider runtime that can't hold WS becomes a real use-case.
+
 ## Development
 
 ```bash
