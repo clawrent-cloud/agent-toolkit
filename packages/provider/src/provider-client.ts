@@ -17,6 +17,12 @@ export interface ProviderClientOptions {
   heartbeatIntervalMs?: number;
   maxReconnectAttempts?: number;
   autoApprove?: boolean;
+  /** Initial backoff for presence REST retries (getMyAgent/activateAgent). Default 1000ms. */
+  restRetryInitialMs?: number;
+  /** Cap for presence REST retry backoff. Default 30000ms. */
+  restRetryMaxDelayMs?: number;
+  /** Max attempts for presence REST retries. undefined = persistent (default, for unattended providers). */
+  restRetryMaxAttempts?: number;
 }
 
 export interface ProviderCallbacks {
@@ -51,6 +57,9 @@ export class ProviderClient extends EventEmitter {
   private readonly heartbeatIntervalMs: number;
   private readonly maxReconnectAttempts: number;
   private readonly autoApprove: boolean;
+  private readonly restRetryInitialMs: number;
+  private readonly restRetryMaxDelayMs: number;
+  private readonly restRetryMaxAttempts: number | undefined;
   private agentToken: string;
   private agentId: string | null = null;
   private agentWs: WebSocket | null = null;
@@ -88,6 +97,9 @@ export class ProviderClient extends EventEmitter {
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 25_000;
     this.maxReconnectAttempts = opts.maxReconnectAttempts ?? 5;
     this.autoApprove = opts.autoApprove ?? true;
+    this.restRetryInitialMs = opts.restRetryInitialMs ?? 1_000;
+    this.restRetryMaxDelayMs = opts.restRetryMaxDelayMs ?? 30_000;
+    this.restRetryMaxAttempts = opts.restRetryMaxAttempts; // undefined => persistent
   }
 
   get running(): boolean { return this._running; }
@@ -100,11 +112,20 @@ export class ProviderClient extends EventEmitter {
   async start(callbacks: ProviderCallbacks): Promise<void> {
     if (this._running) throw new Error('ProviderClient already started');
 
-    // resolve agentId
+    // resolve agentId (with retry — symptom A fix: transient fetch blip at startup
+    // no longer kills the provider).
     if (callbacks.agentId) {
       this.agentId = callbacks.agentId;
     } else {
-      const me = await this.client.getMyAgent();
+      const me = await this.retryWithBackoff(
+        () => this.client.getMyAgent(),
+        {
+          initialMs: this.restRetryInitialMs,
+          maxDelayMs: this.restRetryMaxDelayMs,
+          maxAttempts: this.restRetryMaxAttempts,
+          onRetry: (a, err, delay) => this.emit('agent:warning', `getMyAgent attempt ${a} failed: ${(err as Error).message}; retry in ${delay}ms`),
+        },
+      );
       this.agentId = (me['id'] as string) ?? (me['agentId'] as string) ?? null;
     }
     if (!this.agentId) throw new Error('Could not resolve agentId (pass callbacks.agentId or ensure token is valid)');

@@ -382,3 +382,55 @@ describe('ProviderClient.retryWithBackoff', () => {
     expect(onRetry.mock.calls[0]![2]).toBe(10); // delayMs = initialMs * 2^0 = 10
   });
 });
+
+describe('ProviderClient.start getMyAgent retry (symptom A fix)', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  it('retries getMyAgent on transient fetch failure then succeeds', async () => {
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_clawrent_xxx',
+      restRetryInitialMs: 5,
+      restRetryMaxDelayMs: 20,
+    });
+    const getMyAgent = vi
+      .spyOn(c['client'], 'getMyAgent')
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({ id: 'agent-1' });
+    // stub activation so start() doesn't hit /activate (no HTTP server on this port)
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+
+    await c.start({ onMessage: async () => {} });
+    expect(c.running).toBe(true);
+    expect(getMyAgent).toHaveBeenCalledTimes(3);
+    c.stop();
+  });
+
+  it('rejects start() immediately when getMyAgent returns 4xx (bad token, terminal)', async () => {
+    const c = new ProviderClient({
+      apiUrl: 'http://localhost:1', // unreachable but getMyAgent is mocked below
+      wsUrl: 'ws://localhost:1',
+      agentToken: 'agt_bad',
+      restRetryInitialMs: 5,
+      restRetryMaxDelayMs: 20,
+    });
+    vi.spyOn(c['client'], 'getMyAgent').mockRejectedValue(new Error('API error 401: invalid token'));
+    await expect(c.start({ onMessage: async () => {} })).rejects.toThrow('API error 401');
+    expect(c.running).toBe(false);
+  });
+});
