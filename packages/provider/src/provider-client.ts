@@ -83,6 +83,15 @@ export class ProviderClient extends EventEmitter {
    * hosts calling in a tight loop; hosts wanting a steady indicator should
    * call every ~2s — the peer clears the indicator after a 3s gap). */
   private readonly lastTypingSent = new Map<string, number>();
+  /** One-shot latch: settles (resolve on first success / reject on terminal 4xx)
+   *  when the FIRST activateAgent completes. start() awaits it (α semantics).
+   *  Reused across reconnects but only the first settle matters; later calls are no-ops. */
+  private firstActivationResolve!: () => void;
+  private firstActivationReject!: (err: unknown) => void;
+  private readonly firstActivation: Promise<void> = new Promise((resolve, reject) => {
+    this.firstActivationResolve = resolve;
+    this.firstActivationReject = reject;
+  });
 
   constructor(opts: ProviderClientOptions) {
     super();
@@ -135,17 +144,14 @@ export class ProviderClient extends EventEmitter {
     this.sessionManager.agentId = this.agentId;
     this.bindSessionManager(callbacks);
 
-    // connect /ws/agent (control channel -> presence)
+    // connect /ws/agent (control channel -> presence). The open handler triggers
+    // activateWithRetry on every (re)connect.
     await this.connectAgent();
 
-    // activate (WS now connected -> isAgentConnected gate passes).
-    // Failure is tolerated: profile may not be admin-approved yet, but WS
-    // presence is up so the agent is reachable. Warn, don't crash.
-    try {
-      await this.client.activateAgent(this.agentId);
-    } catch (err) {
-      this.emit('agent:warning', `activation failed: ${(err as Error).message}`);
-    }
+    // α: wait for the first successful activation before declaring running.
+    // On terminal 4xx activation, firstActivation rejects -> start() rejects
+    // (bad token / not approved won't self-heal; plugin logs startProvider failed).
+    await this.firstActivation;
 
     this._running = true;
     this.emit('agent:started', this.agentId);
@@ -209,6 +215,7 @@ export class ProviderClient extends EventEmitter {
           }
         }, this.heartbeatIntervalMs);
         this.emit('agent:connected');
+        void this.activateWithRetry();   // Task 4: activate on every (re)connect
         resolve();
       });
       ws.on('error', reject);
@@ -494,6 +501,35 @@ export class ProviderClient extends EventEmitter {
     if (!m) return false; // network error (no API status) => retry
     const status = Number(m[1]);
     return status >= 400 && status < 500 && status !== 429;
+  }
+
+  /**
+   * Activate the agent with persistent retry. Called on every /ws/agent (re)connect.
+   * Emits: agent:warning per failed attempt; agent:activated on success;
+   * agent:activation:failed on terminal 4xx (or maxAttempts exhausted).
+   * On the FIRST connect (before _running), settles firstActivation:
+   *   success -> resolve (start() proceeds); terminal -> reject (start() rejects).
+   * On reconnects (_running true), just emits (firstActivation already settled).
+   */
+  private async activateWithRetry(): Promise<void> {
+    if (!this.agentId) return;
+    try {
+      await this.retryWithBackoff(
+        () => this.client.activateAgent(this.agentId!),
+        {
+          initialMs: this.restRetryInitialMs,
+          maxDelayMs: this.restRetryMaxDelayMs,
+          maxAttempts: this.restRetryMaxAttempts,
+          onRetry: (a, err, delay) => this.emit('agent:warning', `activation attempt ${a} failed: ${(err as Error).message}; retry in ${delay}ms`),
+        },
+      );
+    } catch (err) {
+      this.emit('agent:activation:failed', this.agentId, err);
+      if (!this._running) this.firstActivationReject(err);
+      return;
+    }
+    this.emit('agent:activated', this.agentId);
+    if (!this._running) this.firstActivationResolve();
   }
 
   stop(): void {

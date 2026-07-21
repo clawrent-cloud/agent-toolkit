@@ -43,6 +43,8 @@ describe('ProviderClient skeleton', () => {
       agentToken: 'agt_clawrent_xxx',
       heartbeatIntervalMs: 100,
     });
+    // Task 4: start() now awaits first activateAgent — stub it to resolve immediately.
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
     // agentId provided -> skips getMyAgent; activation mocked to no-op via fetch mock not needed (WS-only path)
     await c.start({ agentId: 'agent-1', onMessage: async () => {} });
     expect(c.running).toBe(true);
@@ -84,6 +86,8 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
       heartbeatIntervalMs: 100,
       cursorStore: cursor,
     });
+    // Task 4: start() now awaits first activateAgent — stub it to resolve immediately.
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
     await c.start({
       agentId: 'agent-1',
       onMessage: async (_s, msg) => {
@@ -137,6 +141,8 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
     });
     const sessionErrors: unknown[] = [];
     c.on('session:error', (_sid: string, err: unknown) => sessionErrors.push(err));
+    // Task 4: start() now awaits first activateAgent — stub it to resolve immediately.
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
     await c.start({
       agentId: 'agent-1',
       onMessage: async () => {
@@ -196,6 +202,8 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
       heartbeatIntervalMs: 100,
       cursorStore: cursor,
     });
+    // Task 4: start() now awaits first activateAgent — stub it to resolve immediately.
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
     await c.start({
       agentId: 'agent-1',
       onMessage: async (_s, msg) => {
@@ -432,5 +440,102 @@ describe('ProviderClient.start getMyAgent retry (symptom A fix)', () => {
     vi.spyOn(c['client'], 'getMyAgent').mockRejectedValue(new Error('API error 401: invalid token'));
     await expect(c.start({ onMessage: async () => {} })).rejects.toThrow('API error 401');
     expect(c.running).toBe(false);
+  });
+});
+
+describe('ProviderClient activation self-heal (symptom B fix, α semantics)', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  it('start() resolves only after first activateAgent succeeds (α)', async () => {
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      restRetryInitialMs: 5,
+      restRetryMaxDelayMs: 20,
+    });
+    let activateCalled = 0;
+    vi.spyOn(c['client'], 'activateAgent').mockImplementation(async () => {
+      activateCalled++;
+      if (activateCalled === 1) throw new TypeError('fetch failed'); // transient
+      return {} as never;
+    });
+    const activated: string[] = [];
+    c.on('agent:activated', () => activated.push('activated'));
+
+    await c.start({ agentId: 'agent-1', onMessage: async () => {} });
+    expect(c.running).toBe(true);          // α: start() resolved => activation succeeded
+    expect(activateCalled).toBeGreaterThanOrEqual(2);
+    expect(activated).toContain('activated');
+    c.stop();
+  });
+
+  it('start() stays pending while activateAgent persistently fails (network); emits agent:warning (not silent)', async () => {
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      restRetryInitialMs: 5,
+      restRetryMaxDelayMs: 10,
+    });
+    vi.spyOn(c['client'], 'activateAgent').mockRejectedValue(new TypeError('fetch failed'));
+    const warnings: string[] = [];
+    c.on('agent:warning', (m: string) => warnings.push(m));
+
+    let resolved = false;
+    let rejected = false;
+    void c.start({ agentId: 'agent-1', onMessage: async () => {} })
+      .then(() => { resolved = true; })
+      .catch(() => { rejected = true; });
+    await new Promise(r => setTimeout(r, 60)); // let a few retry attempts fire
+    expect(resolved).toBe(false);
+    expect(rejected).toBe(false);              // still pending — α (persistent retry, not terminal)
+    expect(c.running).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings.some(w => w.includes('activation attempt'))).toBe(true);
+    c.stop();
+  });
+
+  it('rejects start() on terminal 4xx activation error (and emits agent:activation:failed)', async () => {
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      restRetryInitialMs: 5,
+      restRetryMaxDelayMs: 10,
+    });
+    vi.spyOn(c['client'], 'activateAgent').mockRejectedValue(new Error('API error 403: not approved'));
+    const failed: unknown[] = [];
+    c.on('agent:activation:failed', (aid: unknown, err: unknown) => failed.push({ aid, err }));
+
+    await expect(c.start({ agentId: 'agent-1', onMessage: async () => {} }))
+      .rejects.toThrow('API error 403');
+    expect(c.running).toBe(false);
+    expect(failed.length).toBeGreaterThanOrEqual(1);
   });
 });
