@@ -82,6 +82,11 @@ export class ProviderClient extends EventEmitter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _running = false;
   private _stopped = false;
+  /** Latch: has /ws/agent ever reached 'open'? Distinguishes first-connect failure
+   *  (reject start()) from a reconnect failure (route via close → reschedule). Also
+   *  used by reconnect gates which key off _stopped (teardown) — _running is false
+   *  throughout the start window, so it can't gate reconnect. */
+  private _agentOpenedOnce = false;
   private readonly activeSessions = new Map<string, ActiveSession>();
   /**
    * Per-session in-flight promise chain: each `session:message` for the same
@@ -234,18 +239,18 @@ export class ProviderClient extends EventEmitter {
           }
         }, this.heartbeatIntervalMs);
         this.emit('agent:connected');
+        this._agentOpenedOnce = true; // first-connect resolved — future errors route via close, not start()
         this.agentReconnectAttempts = 0; // (re)connected — reset reconnect backoff
         void this.activateWithRetry();   // Task 4: activate on every (re)connect
         resolve();
       });
       ws.on('error', err => {
-        if (!this._running) reject(err); // first-connect failure -> reject start()
-        // during reconnect, 'error' is typically followed by 'close' which reschedules
+        if (!this._agentOpenedOnce) reject(err); // first-connect failure (never opened) -> reject start(); after first open, 'error' is followed by 'close' which reschedules
       });
       ws.on('close', (code, reason) => {
         this.clearHeartbeat();
         this.emit('agent:disconnected', code, reason.toString());
-        if (!this._running) return; // stopping — don't reconnect
+        if (this._stopped) return; // tearing down — don't reconnect
         if (AGENT_TERMINAL_CLOSE_CODES.has(code)) {
           this._running = false; // terminal = unrecoverable; reflect in the public getter (don't full-stop; host owns teardown)
           this.emit('agent:dead', this.agentId, `terminal close ${code}: ${reason.toString()}`);
@@ -268,7 +273,7 @@ export class ProviderClient extends EventEmitter {
    * open handler resets attempts + fires activateWithRetry (re-activation).
    */
   private scheduleAgentReconnect(): void {
-    if (!this._running) return;
+    if (this._stopped) return;
     const delay = Math.min(
       this.agentReconnectInitialMs * 2 ** this.agentReconnectAttempts,
       this.agentReconnectMaxDelayMs,
@@ -277,7 +282,7 @@ export class ProviderClient extends EventEmitter {
     this.emit('agent:reconnecting', delay);
     this.agentReconnectTimer = setTimeout(() => {
       this.agentReconnectTimer = null;
-      if (!this._running) return;
+      if (this._stopped) return;
       // Fire-and-forget: open handler activates; errors route back to close → reschedule.
       void this.connectAgent().catch(() => { /* close handler reschedules */ });
     }, delay);

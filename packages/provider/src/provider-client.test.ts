@@ -674,4 +674,40 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
     expect(connections.length).toBe(countAfterStop); // no new connection
     expect(reconnecting.length).toBe(0);
   });
+
+  it('reconnects when /ws/agent closes during the start window (activate still retrying) — not suppressed', async () => {
+    let firstConn = true;
+    wss.on('connection', sock => {
+      if (firstConn) { firstConn = false; setTimeout(() => { try { sock.terminate() } catch { /* closed */ } }, 15); }
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      restRetryInitialMs: 40,
+      restRetryMaxDelayMs: 80,
+      agentReconnectInitialMs: 10,
+      agentReconnectMaxDelayMs: 20,
+    });
+    let activateCalls = 0;
+    vi.spyOn(c['client'], 'activateAgent').mockImplementation(async () => {
+      activateCalls++;
+      if (activateCalls < 3) throw new TypeError('fetch failed');
+      return {} as never;
+    });
+    const reconnecting: number[] = [];
+    c.on('agent:reconnecting', (d: number) => reconnecting.push(d));
+
+    await c.start({ agentId: 'agent-1', onMessage: async () => {} });
+    // During the start window (_running still false), the first WS was terminated
+    // (~15ms) while activate was retrying. The reconnect MUST have fired (gated on
+    // _stopped, not _running). Before the fix this was suppressed → silent offline.
+    expect(reconnecting.length).toBeGreaterThanOrEqual(1);
+    expect(c.running).toBe(true);
+    c.stop();
+  });
 });
