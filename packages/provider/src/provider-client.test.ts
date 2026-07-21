@@ -573,3 +573,104 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
     expect(activate.mock.calls.length).toBe(callsAfterStop); // retry cancelled — no further calls
   });
 });
+
+describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  async function started(c: ProviderClient): Promise<void> {
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+    await c.start({ agentId: 'agent-1', onMessage: async () => {} });
+  }
+
+  it('reconnects after abnormal close (server drops socket)', async () => {
+    const connections: number[] = [];
+    wss.on('connection', sock => {
+      connections.push(connections.length + 1);
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      agentReconnectInitialMs: 10,
+      agentReconnectMaxDelayMs: 20,
+    });
+    const reconnecting: number[] = [];
+    c.on('agent:reconnecting', (delay: number) => reconnecting.push(delay));
+
+    await started(c);
+    const firstWs = c['agentWs'];
+    for (const clientSock of wss.clients) clientSock.terminate(); // server forces abnormal close
+    await new Promise(r => setTimeout(r, 80)); // allow backoff + reconnect
+    expect(reconnecting.length).toBeGreaterThan(0);
+    expect(c['agentWs']).not.toBe(firstWs); // new socket created
+    c.stop();
+  });
+
+  it('does NOT reconnect on terminal close 4001 (invalid token), emits agent:dead', async () => {
+    let firstConn = true;
+    wss.on('connection', sock => {
+      if (firstConn) { firstConn = false; sock.close(4001, 'Invalid agent token'); return; }
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_bad',
+      agentReconnectInitialMs: 10,
+      agentReconnectMaxDelayMs: 20,
+    });
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+    const dead: { aid: unknown; reason: unknown }[] = [];
+    c.on('agent:dead', (aid: unknown, reason: unknown) => dead.push({ aid, reason }));
+
+    await c.start({ agentId: 'agent-1', onMessage: async () => {} });
+    // firstActivation already resolved (activateAgent stubbed) before the 4001 close hits;
+    // _running is true. The 4001 close must emit agent:dead and NOT reconnect.
+    await new Promise(r => setTimeout(r, 60));
+    expect(dead.length).toBeGreaterThanOrEqual(1);
+    expect(String(dead[0]!.reason)).toContain('4001');
+    c.stop();
+  });
+
+  it('does NOT reconnect after stop()', async () => {
+    const connections: number[] = [];
+    wss.on('connection', sock => {
+      connections.push(connections.length + 1);
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      agentReconnectInitialMs: 10,
+      agentReconnectMaxDelayMs: 20,
+    });
+    const reconnecting: unknown[] = [];
+    c.on('agent:reconnecting', () => reconnecting.push(true));
+
+    await started(c);
+    c.stop(); // sets _running=false, clears reconnect timer
+    const countAfterStop = connections.length;
+    for (const clientSock of wss.clients) clientSock.terminate();
+    await new Promise(r => setTimeout(r, 60));
+    expect(connections.length).toBe(countAfterStop); // no new connection
+    expect(reconnecting.length).toBe(0);
+  });
+});

@@ -9,6 +9,12 @@ import type { CursorStore } from './cursor.js';
 import { resumeActiveSessions } from './helpers.js';
 import type { ActiveSession } from './types.js';
 
+/** Backend /ws/agent close codes that mean the connection can never be
+ *  re-established — stop reconnecting. From apps/platform-api ws-agent-handler.ts:
+ *  4000 missing token, 4001 invalid agent token. (Different from /ws/session's
+ *  4000-4004 set — SessionManager uses its own; do not share.) */
+const AGENT_TERMINAL_CLOSE_CODES = new Set([4000, 4001]);
+
 export interface ProviderClientOptions {
   apiUrl?: string;
   wsUrl?: string;
@@ -23,6 +29,10 @@ export interface ProviderClientOptions {
   restRetryMaxDelayMs?: number;
   /** Max attempts for presence REST retries. undefined = persistent (default, for unattended providers). */
   restRetryMaxAttempts?: number;
+  /** Initial backoff for /ws/agent reconnect. Default 1000ms. */
+  agentReconnectInitialMs?: number;
+  /** Cap for /ws/agent reconnect backoff. Default 30000ms. */
+  agentReconnectMaxDelayMs?: number;
 }
 
 export interface ProviderCallbacks {
@@ -60,6 +70,11 @@ export class ProviderClient extends EventEmitter {
   private readonly restRetryInitialMs: number;
   private readonly restRetryMaxDelayMs: number;
   private readonly restRetryMaxAttempts: number | undefined;
+  private readonly agentReconnectInitialMs: number;
+  private readonly agentReconnectMaxDelayMs: number;
+  /** /ws/agent reconnect state. */
+  private agentReconnectAttempts = 0;
+  private agentReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private agentToken: string;
   private agentId: string | null = null;
   private agentWs: WebSocket | null = null;
@@ -110,6 +125,8 @@ export class ProviderClient extends EventEmitter {
     this.restRetryInitialMs = opts.restRetryInitialMs ?? 1_000;
     this.restRetryMaxDelayMs = opts.restRetryMaxDelayMs ?? 30_000;
     this.restRetryMaxAttempts = opts.restRetryMaxAttempts; // undefined => persistent
+    this.agentReconnectInitialMs = opts.agentReconnectInitialMs ?? 1_000;
+    this.agentReconnectMaxDelayMs = opts.agentReconnectMaxDelayMs ?? 30_000;
   }
 
   get running(): boolean { return this._running; }
@@ -217,13 +234,23 @@ export class ProviderClient extends EventEmitter {
           }
         }, this.heartbeatIntervalMs);
         this.emit('agent:connected');
+        this.agentReconnectAttempts = 0; // (re)connected — reset reconnect backoff
         void this.activateWithRetry();   // Task 4: activate on every (re)connect
         resolve();
       });
-      ws.on('error', reject);
+      ws.on('error', err => {
+        if (!this._running) reject(err); // first-connect failure -> reject start()
+        // during reconnect, 'error' is typically followed by 'close' which reschedules
+      });
       ws.on('close', (code, reason) => {
+        this.clearHeartbeat();
         this.emit('agent:disconnected', code, reason.toString());
-        // exponential backoff reconnect guarded by running (expanded in Task 6b; keep simple here)
+        if (!this._running) return; // stopping — don't reconnect
+        if (AGENT_TERMINAL_CLOSE_CODES.has(code)) {
+          this.emit('agent:dead', this.agentId, `terminal close ${code}: ${reason.toString()}`);
+          return; // bad token etc. — won't fix, don't loop
+        }
+        this.scheduleAgentReconnect();
       });
       ws.on('message', raw => {
         void this.handleAgentMessage(raw).catch(err => {
@@ -231,6 +258,28 @@ export class ProviderClient extends EventEmitter {
         });
       });
     });
+  }
+
+  /**
+   * Reconnect /ws/agent after an abnormal (non-terminal) close. Persistent
+   * (never gives up) with exponential backoff capped at agentReconnectMaxDelayMs.
+   * Guarded by _running: stop() cancels. On the new socket's 'open', the existing
+   * open handler resets attempts + fires activateWithRetry (re-activation).
+   */
+  private scheduleAgentReconnect(): void {
+    if (!this._running) return;
+    const delay = Math.min(
+      this.agentReconnectInitialMs * 2 ** this.agentReconnectAttempts,
+      this.agentReconnectMaxDelayMs,
+    );
+    this.agentReconnectAttempts++;
+    this.emit('agent:reconnecting', delay);
+    this.agentReconnectTimer = setTimeout(() => {
+      this.agentReconnectTimer = null;
+      if (!this._running) return;
+      // Fire-and-forget: open handler activates; errors route back to close → reschedule.
+      void this.connectAgent().catch(() => { /* close handler reschedules */ });
+    }, delay);
   }
 
   /**
@@ -538,11 +587,16 @@ export class ProviderClient extends EventEmitter {
     if (!this._running) this.firstActivationResolve();
   }
 
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+  }
+
   stop(): void {
     this._running = false;
     this._stopped = true;
+    if (this.agentReconnectTimer) { clearTimeout(this.agentReconnectTimer); this.agentReconnectTimer = null; }
     this.firstActivationReject(new Error('Provider stopped'));
-    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+    this.clearHeartbeat();
     this.sessionManager?.disconnectAll();
     if (this.agentWs) { this.agentWs.close(1000, 'Provider stopping'); this.agentWs = null; }
     this.activeSessions.clear();
