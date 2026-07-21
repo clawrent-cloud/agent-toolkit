@@ -423,6 +423,58 @@ export class ProviderClient extends EventEmitter {
     return sm.send(sessionId, { type: ControlSignalType.DIALOGUE_TYPING, payload: {} });
   }
 
+  /**
+   * Retry with exponential backoff. Used to harden presence-critical REST calls
+   * (getMyAgent, activateAgent) against transient network failures.
+   *
+   * Public (no `private` keyword) so tests can drive it directly via bracket
+   * access as a hook — matches the `handleSessionMessage` precedent. Tasks 3-5
+   * will wire it into `start()`; until then it has no internal call site, which
+   * is why it cannot be `private` (TS6133 under `noUnusedLocals`).
+   *
+   * - maxAttempts === undefined => persistent (never gives up) — the default for
+   *   unattended providers with no external restart.
+   * - Terminal REST errors (4xx except 429) throw immediately — bad tokens won't
+   *   fix themselves.
+   * - Network errors / 5xx / 429 retry with exponential backoff capped at
+   *   maxDelayMs. onRetry (if set) fires BEFORE each sleep so callers can emit.
+   */
+  async retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    opts: {
+      initialMs: number;
+      maxDelayMs: number;
+      maxAttempts?: number;
+      onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+    },
+  ): Promise<T> {
+    let attempt = 0;
+    // maxAttempts undefined => persistent
+    while (opts.maxAttempts === undefined || attempt < opts.maxAttempts) {
+      try {
+        return await fn();
+      } catch (err) {
+        attempt++;
+        if (this.isTerminalRestError(err)) throw err;
+        if (opts.maxAttempts !== undefined && attempt >= opts.maxAttempts) throw err;
+        const delay = Math.min(opts.initialMs * 2 ** (attempt - 1), opts.maxDelayMs);
+        opts.onRetry?.(attempt, err, delay);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    // unreachable (loop covers all paths), but satisfies TS return type
+    throw new Error('retryWithBackoff: exhausted');
+  }
+
+  /** 4xx (except 429) are terminal — auth/validation won't self-heal. */
+  private isTerminalRestError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    const m = err.message.match(/^API error (\d+):/);
+    if (!m) return false; // network error (no API status) => retry
+    const status = Number(m[1]);
+    return status >= 400 && status < 500 && status !== 429;
+  }
+
   stop(): void {
     this._running = false;
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }

@@ -321,3 +321,64 @@ describe('ProviderClient.sendTyping', () => {
     expect(mockSm.send).toHaveBeenNthCalledWith(2, 's2', { type: 'dialogue.typing', payload: {} });
   });
 });
+
+describe('ProviderClient.retryWithBackoff', () => {
+  let client: ProviderClient;
+
+  beforeEach(() => {
+    client = new ProviderClient({ agentToken: 'agt_test' });
+  });
+
+  it('returns the value when fn succeeds on first try (no retry)', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    const res = await client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50 });
+    expect(res).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on network-like errors until success', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce('ok');
+    const res = await client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50 });
+    expect(res).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry on terminal 4xx errors (throws immediately)', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('API error 401: Unauthorized'));
+    await expect(client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50 }))
+      .rejects.toThrow('API error 401');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on 5xx and 429', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error('API error 500: boom'))
+      .mockRejectedValueOnce(new Error('API error 429: slow down'))
+      .mockResolvedValueOnce('ok');
+    const res = await client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50 });
+    expect(res).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('respects maxAttempts (gives up after N retries)', async () => {
+    const fn = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    await expect(client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50, maxAttempts: 3 }))
+      .rejects.toThrow();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('invokes onRetry(attempt, err, delayMs) before each backoff sleep', async () => {
+    const onRetry = vi.fn();
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce('ok');
+    await client['retryWithBackoff'](fn, { initialMs: 10, maxDelayMs: 50, onRetry });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry.mock.calls[0]![0]).toBe(1); // attempt
+    expect((onRetry.mock.calls[0]![1] as Error).message).toBe('fetch failed');
+    expect(onRetry.mock.calls[0]![2]).toBe(10); // delayMs = initialMs * 2^0 = 10
+  });
+});
