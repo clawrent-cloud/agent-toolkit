@@ -66,6 +66,7 @@ export class ProviderClient extends EventEmitter {
   private sessionManager: SessionManager | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _running = false;
+  private _stopped = false;
   private readonly activeSessions = new Map<string, ActiveSession>();
   /**
    * Per-session in-flight promise chain: each `session:message` for the same
@@ -132,6 +133,7 @@ export class ProviderClient extends EventEmitter {
           initialMs: this.restRetryInitialMs,
           maxDelayMs: this.restRetryMaxDelayMs,
           maxAttempts: this.restRetryMaxAttempts,
+          isCancelled: () => this._stopped,
           onRetry: (a, err, delay) => this.emit('agent:warning', `getMyAgent attempt ${a} failed: ${(err as Error).message}; retry in ${delay}ms`),
         },
       );
@@ -474,11 +476,13 @@ export class ProviderClient extends EventEmitter {
       maxDelayMs: number;
       maxAttempts?: number;
       onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+      isCancelled?: () => boolean;
     },
   ): Promise<T> {
     let attempt = 0;
     // maxAttempts undefined => persistent
     while (opts.maxAttempts === undefined || attempt < opts.maxAttempts) {
+      if (opts.isCancelled?.()) throw new Error('cancelled');
       try {
         return await fn();
       } catch (err) {
@@ -520,10 +524,12 @@ export class ProviderClient extends EventEmitter {
           initialMs: this.restRetryInitialMs,
           maxDelayMs: this.restRetryMaxDelayMs,
           maxAttempts: this.restRetryMaxAttempts,
+          isCancelled: () => this._stopped,
           onRetry: (a, err, delay) => this.emit('agent:warning', `activation attempt ${a} failed: ${(err as Error).message}; retry in ${delay}ms`),
         },
       );
     } catch (err) {
+      if (this._stopped) return; // cancelled by stop — silent; stop() already rejected firstActivation
       this.emit('agent:activation:failed', this.agentId, err);
       if (!this._running) this.firstActivationReject(err);
       return;
@@ -534,6 +540,8 @@ export class ProviderClient extends EventEmitter {
 
   stop(): void {
     this._running = false;
+    this._stopped = true;
+    this.firstActivationReject(new Error('Provider stopped'));
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     this.sessionManager?.disconnectAll();
     if (this.agentWs) { this.agentWs.close(1000, 'Provider stopping'); this.agentWs = null; }

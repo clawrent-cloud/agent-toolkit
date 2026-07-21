@@ -538,4 +538,38 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
     expect(c.running).toBe(false);
     expect(failed.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('stop() during pending activation cancels the retry and rejects start()', async () => {
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      restRetryInitialMs: 20,
+      restRetryMaxDelayMs: 40,
+    });
+    const activate = vi.spyOn(c['client'], 'activateAgent').mockRejectedValue(new TypeError('fetch failed'));
+
+    let resolved = false;
+    let rejected = false;
+    void c.start({ agentId: 'agent-1', onMessage: async () => {} })
+      .then(() => { resolved = true; })
+      .catch(() => { rejected = true; });
+    await new Promise(r => setTimeout(r, 30)); // let a couple activation attempts fire
+    expect(activate.mock.calls.length).toBeGreaterThan(0);
+    expect(resolved).toBe(false);
+
+    c.stop(); // cancels the retry + rejects start()
+    await new Promise(r => setTimeout(r, 50));
+    expect(rejected).toBe(true);   // start() rejected — no hang
+    expect(resolved).toBe(false);
+    const callsAfterStop = activate.mock.calls.length;
+    await new Promise(r => setTimeout(r, 80));
+    expect(activate.mock.calls.length).toBe(callsAfterStop); // retry cancelled — no further calls
+  });
 });
