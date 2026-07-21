@@ -247,6 +247,7 @@ export class ProviderClient extends EventEmitter {
         this.emit('agent:disconnected', code, reason.toString());
         if (!this._running) return; // stopping — don't reconnect
         if (AGENT_TERMINAL_CLOSE_CODES.has(code)) {
+          this._running = false; // terminal = unrecoverable; reflect in the public getter (don't full-stop; host owns teardown)
           this.emit('agent:dead', this.agentId, `terminal close ${code}: ${reason.toString()}`);
           return; // bad token etc. — won't fix, don't loop
         }

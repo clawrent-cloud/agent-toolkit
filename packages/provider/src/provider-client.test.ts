@@ -643,6 +643,7 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
     await new Promise(r => setTimeout(r, 60));
     expect(dead.length).toBeGreaterThanOrEqual(1);
     expect(String(dead[0]!.reason)).toContain('4001');
+    expect(c.running).toBe(false); // terminal close -> running getter accurate (not lying true)
     c.stop();
   });
 
