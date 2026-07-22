@@ -33,6 +33,10 @@ export interface ProviderClientOptions {
   agentReconnectInitialMs?: number;
   /** Cap for /ws/agent reconnect backoff. Default 30000ms. */
   agentReconnectMaxDelayMs?: number;
+  /** Max wait for the backend's agent.connected welcome before falling back to a
+   *  direct activate (#4). Default 5000ms. The welcome normally arrives within ms;
+   *  the timeout only guards half-open sockets in pathological cases. */
+  activateWelcomeTimeoutMs?: number;
 }
 
 export interface ProviderCallbacks {
@@ -72,6 +76,7 @@ export class ProviderClient extends EventEmitter {
   private readonly restRetryMaxAttempts: number | undefined;
   private readonly agentReconnectInitialMs: number;
   private readonly agentReconnectMaxDelayMs: number;
+  private readonly activateWelcomeTimeoutMs: number;
   /** /ws/agent reconnect state. */
   private agentReconnectAttempts = 0;
   private agentReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -82,11 +87,6 @@ export class ProviderClient extends EventEmitter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _running = false;
   private _stopped = false;
-  /** Latch: has /ws/agent ever reached 'open'? Distinguishes first-connect failure
-   *  (reject start()) from a reconnect failure (route via close → reschedule). Also
-   *  used by reconnect gates which key off _stopped (teardown) — _running is false
-   *  throughout the start window, so it can't gate reconnect. */
-  private _agentOpenedOnce = false;
   private readonly activeSessions = new Map<string, ActiveSession>();
   /**
    * Per-session in-flight promise chain: each `session:message` for the same
@@ -113,6 +113,11 @@ export class ProviderClient extends EventEmitter {
     this.firstActivationResolve = resolve;
     this.firstActivationReject = reject;
   });
+  /** Per-connection latch: resolves when the backend's agent.connected welcome
+   *  frame arrives on THIS socket. Reset on every open so each (re)connect waits
+   *  for its own welcome (#4). */
+  private agentWelcomeResolve!: () => void;
+  private agentWelcome: Promise<void> = new Promise(r => { this.agentWelcomeResolve = r; });
 
   constructor(opts: ProviderClientOptions) {
     super();
@@ -132,6 +137,7 @@ export class ProviderClient extends EventEmitter {
     this.restRetryMaxAttempts = opts.restRetryMaxAttempts; // undefined => persistent
     this.agentReconnectInitialMs = opts.agentReconnectInitialMs ?? 1_000;
     this.agentReconnectMaxDelayMs = opts.agentReconnectMaxDelayMs ?? 30_000;
+    this.activateWelcomeTimeoutMs = opts.activateWelcomeTimeoutMs ?? 5_000;
   }
 
   get running(): boolean { return this._running; }
@@ -168,9 +174,11 @@ export class ProviderClient extends EventEmitter {
     this.sessionManager.agentId = this.agentId;
     this.bindSessionManager(callbacks);
 
-    // connect /ws/agent (control channel -> presence). The open handler triggers
-    // activateWithRetry on every (re)connect.
-    await this.connectAgent();
+    // connect /ws/agent (control channel -> presence). Fire-and-forget the connect
+    // promise: a first-connect failure no longer rejects start() — connectAgent
+    // routes it through scheduleAgentReconnect (#1), and start() awaits
+    // firstActivation below (open -> activate -> resolve) regardless.
+    void this.connectAgent();
 
     // α: wait for the first successful activation before declaring running.
     // On terminal 4xx activation, firstActivation rejects -> start() rejects
@@ -228,7 +236,7 @@ export class ProviderClient extends EventEmitter {
   }
 
   private connectAgent(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const url = `${this.client.wsUrl}/ws/agent?token=${encodeURIComponent(this.agentToken)}`;
       const ws = new WebSocket(url);
       this.agentWs = ws;
@@ -238,14 +246,20 @@ export class ProviderClient extends EventEmitter {
             ws.send(JSON.stringify({ type: 'system.heartbeat', payload: {} }));
           }
         }, this.heartbeatIntervalMs);
+        // Reset the welcome latch for THIS connection: each (re)connect waits for
+        // its own agent.connected before activating (#4).
+        this.agentWelcome = new Promise<void>(r => { this.agentWelcomeResolve = r; });
         this.emit('agent:connected');
-        this._agentOpenedOnce = true; // first-connect resolved — future errors route via close, not start()
         this.agentReconnectAttempts = 0; // (re)connected — reset reconnect backoff
-        void this.activateWithRetry();   // Task 4: activate on every (re)connect
+        void this.activateAfterWelcome(); // #4: wait for agent.connected, then activate
         resolve();
       });
-      ws.on('error', err => {
-        if (!this._agentOpenedOnce) reject(err); // first-connect failure (never opened) -> reject start(); after first open, 'error' is followed by 'close' which reschedules
+      ws.on('error', () => {
+        // 'error' is always followed by 'close', whose handler schedules the
+        // reconnect for both first-connect and reconnect failures (single source
+        // of truth — avoids a double schedule). We no longer reject start() on a
+        // first-connect failure (#1): start() awaits firstActivation, which
+        // resolves once a retry connect reaches open.
       });
       ws.on('close', (code, reason) => {
         this.clearHeartbeat();
@@ -337,6 +351,7 @@ export class ProviderClient extends EventEmitter {
         this.emit('agent:warning', `server error: ${JSON.stringify(payload) ?? 'no payload'}`);
         return;
       case 'agent.connected':
+        this.agentWelcomeResolve(); // #4: welcome received -> unlock activateAfterWelcome
         this.emit('agent:connected', payload);
         return;
       case 'agent.status_updated':
@@ -578,6 +593,27 @@ export class ProviderClient extends EventEmitter {
     if (!m) return false; // network error (no API status) => retry
     const status = Number(m[1]);
     return status >= 400 && status < 500 && status !== 429;
+  }
+
+  /**
+   * Wait for the backend's `agent.connected` welcome frame, then activate.
+   * Backend order (ws-agent-handler.ts): registerAgentClient (join connected set)
+   * THEN send welcome — so receiving the welcome guarantees isAgentConnected=true,
+   * eliminating the activate-vs-register race that produced the transient 400
+   * "Agent is not connected via WebSocket" (#4). A conservative timeout falls back
+   * to a direct activate (degrades to the pre-#4 behavior; never worse).
+   */
+  private async activateAfterWelcome(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.agentWelcome,
+        new Promise<void>(r => { timer = setTimeout(r, this.activateWelcomeTimeoutMs); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    await this.activateWithRetry();
   }
 
   /**

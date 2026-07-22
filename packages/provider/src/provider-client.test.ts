@@ -32,6 +32,7 @@ describe('ProviderClient skeleton', () => {
     wss.on('connection', sock => {
       // /ws/agent connection accepted
       onConnect();
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -70,6 +71,7 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
   it('delivers a consumer message to onMessage and advances cursor (dedupes duplicates)', async () => {
     const received: string[] = [];
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') {
@@ -123,6 +125,7 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
     let shouldThrow = true;
     const calls: number[] = [];
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') {
@@ -186,6 +189,7 @@ describe('ProviderClient message delivery + cursor dedupe', () => {
     const received: string[] = [];
     let processMs = 30; // simulate onMessage that takes a tick
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') {
@@ -403,6 +407,7 @@ describe('ProviderClient.start getMyAgent retry (symptom A fix)', () => {
 
   it('retries getMyAgent on transient fetch failure then succeeds', async () => {
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -455,6 +460,7 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
 
   it('start() resolves only after first activateAgent succeeds (α)', async () => {
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -485,6 +491,7 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
 
   it('start() stays pending while activateAgent persistently fails (network); emits agent:warning (not silent)', async () => {
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -517,6 +524,7 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
 
   it('rejects start() on terminal 4xx activation error (and emits agent:activation:failed)', async () => {
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -541,6 +549,7 @@ describe('ProviderClient activation self-heal (symptom B fix, α semantics)', ()
 
   it('stop() during pending activation cancels the retry and rejects start()', async () => {
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -593,6 +602,7 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
     const connections: number[] = [];
     wss.on('connection', sock => {
       connections.push(connections.length + 1);
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -620,6 +630,7 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
   it('does NOT reconnect on terminal close 4001 (invalid token), emits agent:dead', async () => {
     let firstConn = true;
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       if (firstConn) { firstConn = false; sock.close(4001, 'Invalid agent token'); return; }
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
@@ -651,6 +662,7 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
     const connections: number[] = [];
     wss.on('connection', sock => {
       connections.push(connections.length + 1);
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
         if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
@@ -678,6 +690,7 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
   it('reconnects when /ws/agent closes during the start window (activate still retrying) — not suppressed', async () => {
     let firstConn = true;
     wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
       if (firstConn) { firstConn = false; setTimeout(() => { try { sock.terminate() } catch { /* closed */ } }, 15); }
       sock.on('message', m => {
         const msg = JSON.parse(m.toString());
@@ -746,5 +759,135 @@ describe('ProviderClient.retryWithBackoff cancellable sleep (#2)', () => {
     await client['retryWithBackoff'](fn, { initialMs: 80, maxDelayMs: 200 });
     const elapsed = Date.now() - start;
     expect(elapsed).toBeGreaterThanOrEqual(75); // slept ~80ms
+  });
+});
+
+describe('ProviderClient first /ws/agent handshake retry (#1)', () => {
+  it('retries the first WS connect on failure instead of rejecting start()', async () => {
+    // Port with nothing listening -> first connect fails (ECONNREFUSED) and keeps failing.
+    const c = new ProviderClient({
+      apiUrl: 'http://localhost:1', // REST not reached: agentId passed + activateAgent stubbed
+      wsUrl: 'ws://localhost:1',    // nothing listening -> WS connect error
+      agentToken: 'agt_x',
+      agentReconnectInitialMs: 20,
+      agentReconnectMaxDelayMs: 40,
+    });
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+    const reconnecting: unknown[] = [];
+    c.on('agent:reconnecting', () => reconnecting.push(true));
+
+    // Real ws://localhost:1 keeps failing; start() should stay pending (persistently
+    // retrying), NOT reject. Before #1 it rejected immediately.
+    let resolved = false;
+    let rejected = false;
+    void c.start({ agentId: 'agent-1', onMessage: async () => {} })
+      .then(() => { resolved = true; })
+      .catch(() => { rejected = true; });
+    await new Promise(r => setTimeout(r, 150)); // let a few reconnect attempts fire
+    expect(resolved).toBe(false);
+    expect(rejected).toBe(false);   // NOT rejected — this is the #1 fix
+    expect(reconnecting.length).toBeGreaterThan(0);
+    c.stop();
+  });
+
+  it('first WS connect failure then success: start() resolves once open+activate', async () => {
+    // Server rejects the first 2 WS handshakes (verifyClient -> 403), then accepts.
+    // Each rejected handshake -> client 'error'+'close' -> close handler schedules
+    // a reconnect. Before #1, the first rejection rejected start(); now it retries.
+    let rejectionsLeft = 2;
+    const wss = new WebSocketServer({
+      port: 0,
+      verifyClient: (_info, cb) => {
+        if (rejectionsLeft > 0) { rejectionsLeft--; cb(false, 403, 'rejected'); return; }
+        cb(true);
+      },
+    });
+    const port = (wss.address() as { port: number }).port;
+    wss.on('connection', sock => {
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    try {
+      const c = new ProviderClient({
+        apiUrl: `http://localhost:${port}`,
+        wsUrl: `ws://localhost:${port}`,
+        agentToken: 'agt_x',
+        agentReconnectInitialMs: 30,
+        agentReconnectMaxDelayMs: 60,
+      });
+      vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+
+      await c.start({ agentId: 'agent-1', onMessage: async () => {} });
+      expect(c.running).toBe(true); // first 2 handshakes rejected, a later one succeeds
+      c.stop();
+    } finally {
+      wss.close();
+    }
+  });
+});
+
+describe('ProviderClient activate waits for agent.connected welcome (#4)', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  it('does NOT call activateAgent before receiving agent.connected welcome', async () => {
+    // Server accepts the socket but does NOT send the agent.connected welcome —
+    // simulating the backend async window before registerAgentClient finishes.
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      activateWelcomeTimeoutMs: 60_000, // effectively disable — we drive the welcome manually
+    });
+    const activate = vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+
+    let started = false;
+    void c.start({ agentId: 'agent-1', onMessage: async () => {} }).then(() => { started = true; });
+    await new Promise(r => setTimeout(r, 100)); // open + sit idle (no welcome yet)
+    expect(activate).not.toHaveBeenCalled(); // #4: activate held back until welcome
+    expect(started).toBe(false);
+
+    // Now push the welcome -> activate should fire.
+    for (const s of wss.clients) s.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
+    await new Promise(r => setTimeout(r, 80));
+    expect(activate).toHaveBeenCalled();
+    expect(started).toBe(true);
+    c.stop();
+  });
+
+  it('falls back to direct activate after welcome timeout (degrades to old behavior)', async () => {
+    // Server never sends the welcome; the conservative timeout falls back to activate.
+    wss.on('connection', sock => {
+      sock.on('message', m => {
+        const msg = JSON.parse(m.toString());
+        if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+      });
+    });
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_x',
+      activateWelcomeTimeoutMs: 100, // short for the test
+    });
+    const activate = vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+    await c.start({ agentId: 'agent-1', onMessage: async () => {} }); // resolves after timeout fallback
+    expect(activate).toHaveBeenCalled();
+    expect(c.running).toBe(true);
+    c.stop();
   });
 });
