@@ -140,6 +140,10 @@ export class ProviderAgent extends EventEmitter {
     forward('agent:disconnected');
     forward('agent:started');
     forward('agent:warning');
+    forward('agent:reconnecting');
+    forward('agent:activated');
+    forward('agent:activation:failed');
+    forward('agent:dead');
     forward('session:new');
     forward('session:approved');
     forward('session:connected');
