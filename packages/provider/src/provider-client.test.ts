@@ -711,3 +711,40 @@ describe('ProviderClient /ws/agent reconnect (bonus fix)', () => {
     c.stop();
   });
 });
+
+describe('ProviderClient.retryWithBackoff cancellable sleep (#2)', () => {
+  let client: ProviderClient;
+
+  beforeEach(() => {
+    client = new ProviderClient({ agentToken: 'agt_test' });
+  });
+
+  it('cancels mid-sleep within ~200ms when isCancelled flips (does not stall maxDelayMs)', async () => {
+    // fn always fails with a retryable network error -> enters backoff sleep
+    const fn = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    let cancelled = false;
+    const start = Date.now();
+    const p = client['retryWithBackoff'](fn, {
+      initialMs: 2_500, // first backoff delay = 2500ms; would stall if sleep weren't cancellable
+      maxDelayMs: 30_000,
+      isCancelled: () => cancelled,
+    });
+    // flip cancel shortly after the first sleep begins
+    await new Promise(r => setTimeout(r, 120));
+    cancelled = true;
+    await expect(p).rejects.toThrow('cancelled');
+    const elapsed = Date.now() - start;
+    // Should return well under the 2500ms backoff (cancellation latency ~120-200ms).
+    expect(elapsed).toBeLessThan(2_000);
+  });
+
+  it('still sleeps the full delay when not cancelled', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce('ok');
+    const start = Date.now();
+    await client['retryWithBackoff'](fn, { initialMs: 80, maxDelayMs: 200 });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(75); // slept ~80ms
+  });
+});

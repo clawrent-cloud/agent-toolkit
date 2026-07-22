@@ -509,6 +509,24 @@ export class ProviderClient extends EventEmitter {
   }
 
   /**
+   * setTimeout-based sleep that resolves early if `isCancelled` flips true,
+   * polled every ~50ms. Lets `stop()` (or any cancel signal) interrupt an
+   * in-progress backoff sleep instead of stalling up to `maxDelayMs` (30s).
+   * The caller's loop-top `isCancelled` check then throws 'cancelled'.
+   */
+  private cancellableSleep(delayMs: number, isCancelled?: () => boolean): Promise<void> {
+    if (!isCancelled) return new Promise(r => setTimeout(r, delayMs));
+    return new Promise<void>(resolve => {
+      const end = Date.now() + delayMs;
+      const tick = (): void => {
+        if (isCancelled() || Date.now() >= end) { resolve(); return; }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  /**
    * Retry with exponential backoff. Used to harden presence-critical REST calls
    * (getMyAgent, activateAgent) against transient network failures.
    *
@@ -546,7 +564,7 @@ export class ProviderClient extends EventEmitter {
         if (opts.maxAttempts !== undefined && attempt >= opts.maxAttempts) throw err;
         const delay = Math.min(opts.initialMs * 2 ** (attempt - 1), opts.maxDelayMs);
         opts.onRetry?.(attempt, err, delay);
-        await new Promise(r => setTimeout(r, delay));
+        await this.cancellableSleep(delay, opts.isCancelled);
       }
     }
     // unreachable (loop covers all paths), but satisfies TS return type
