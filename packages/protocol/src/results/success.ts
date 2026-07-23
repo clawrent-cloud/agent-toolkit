@@ -20,6 +20,10 @@ export const SuccessResultSchema = z.object({
       .optional(),
   }),
   executionTime: z.number(),
+  /** Plan 4: provider agent 的 token 用量(plugin/ProviderClient 填,Plan 4b)。
+   *  缺省(undefined)→ 不累加(向后兼容现有 plugin)。对齐主仓
+   *  clawrent/packages/protocol/src/results/success.ts。 */
+  usage: z.object({ totalTokens: z.number().min(0).optional() }).optional(),
 });
 
 export type SuccessResult = z.infer<typeof SuccessResultSchema>;
