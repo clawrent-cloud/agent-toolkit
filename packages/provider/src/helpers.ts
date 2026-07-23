@@ -3,17 +3,21 @@ import type { SessionManager } from './session-manager.js';
 import type { ActiveSession, SessionSummary, SessionDiff } from './types.js';
 
 /**
- * Pull active provider sessions and (re)attach their /ws/session. Returns the
+ * Pull active provider sessions and (re)attach their WS channel. Returns the
  * sessions that were attached. Extracted from the old ProviderAgent.reattachActiveSessions.
  *
  * Backend getSessions returns `{ data: Array<{ id, sessionToken?, ... }> }`.
- * We accept either `id` or `sessionId` defensively; sessions missing a
- * sessionToken are skipped (their WS cannot be re-attached).
+ * We accept either `id` or `sessionId` defensively. In /ws/session mode (default)
+ * sessions missing a sessionToken are skipped (their WS cannot be re-attached).
+ * In /ws/group mode (opts.useGroupChannel + opts.agentToken), sessionToken is not
+ * required — each session is reattached via connectGroup with the agentToken.
  */
 export async function resumeActiveSessions(
   client: ApiClient,
   sessionManager: SessionManager,
+  opts?: { useGroupChannel?: boolean; agentToken?: string },
 ): Promise<ActiveSession[]> {
+  const useGroup = !!opts?.useGroupChannel && !!opts?.agentToken;
   const res = (await client.getSessions({ role: 'provider', status: 'active' })) as {
     data?: Array<Record<string, unknown>>;
   };
@@ -22,15 +26,20 @@ export async function resumeActiveSessions(
   for (const s of list) {
     const sessionId = s['sessionId'] ?? s['id'];
     const sessionToken = s['sessionToken'];
-    if (typeof sessionId !== 'string' || typeof sessionToken !== 'string') continue;
+    if (typeof sessionId !== 'string') continue;
+    if (!useGroup && typeof sessionToken !== 'string') continue;
     attached.push({
       sessionId,
-      sessionToken,
+      sessionToken: typeof sessionToken === 'string' ? sessionToken : '',
       taskDescription: typeof s['taskDescription'] === 'string' ? s['taskDescription'] : undefined,
       consumerUserId: typeof s['consumerUserId'] === 'string' ? s['consumerUserId'] : undefined,
       slotIndex: typeof s['slotIndex'] === 'number' ? s['slotIndex'] : undefined,
     });
-    sessionManager.connect(sessionId, sessionToken);
+    if (useGroup) {
+      sessionManager.connectGroup(sessionId, opts!.agentToken!);
+    } else {
+      sessionManager.connect(sessionId, sessionToken as string);
+    }
   }
   return attached;
 }

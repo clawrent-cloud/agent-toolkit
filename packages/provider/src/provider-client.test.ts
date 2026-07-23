@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { rmSync } from 'node:fs';
 import { ProviderClient } from './provider-client.js';
 import { FileCursorStore } from './cursor.js';
@@ -889,5 +889,124 @@ describe('ProviderClient activate waits for agent.connected welcome (#4)', () =>
     expect(activate).toHaveBeenCalled();
     expect(c.running).toBe(true);
     c.stop();
+  });
+});
+
+describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  /** Start a group-mode client against a mock server that routes /ws/agent and
+   *  /ws/group by URL. Returns helpers to assert outbound behavior. autoApprove
+   *  is off + onPendingApproval=>true so connectGroup runs without a REST approve
+   *  call (no HTTP server in this test). */
+  async function startGroup(opts: {
+    onGroupMessage?: (frame: Record<string, unknown>) => void;
+    participantId?: string;
+  } = {}): Promise<{
+    c: ProviderClient;
+    groupConnections: () => number;
+    sendAgentFrame: (frame: Record<string, unknown>) => void;
+  }> {
+    let agentSock: WebSocket | undefined;
+    let groupCount = 0;
+    const participantId = opts.participantId ?? 'part-agent-1';
+    wss.on('connection', (sock, req) => {
+      const url = req.url ?? '';
+      if (url.startsWith('/ws/agent')) {
+        agentSock = sock;
+        sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
+        sock.on('message', m => {
+          const msg = JSON.parse(m.toString());
+          if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+        });
+      } else if (url.startsWith('/ws/group')) {
+        groupCount++;
+        sock.send(JSON.stringify({
+          type: 'system.connected',
+          payload: { participant: { participantId, participantType: 'agent', side: 'provider', agentId: 'agent-1' } },
+        }));
+        sock.on('message', raw => {
+          try { opts.onGroupMessage?.(JSON.parse(raw.toString())); } catch { /* ignore */ }
+        });
+      }
+    });
+
+    const c = new ProviderClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_clawrent_xxx',
+      useGroupChannel: true,
+      autoApprove: false,
+    });
+    vi.spyOn(c['client'], 'activateAgent').mockResolvedValue({} as never);
+    await c.start({ agentId: 'agent-1', onMessage: async () => {}, onPendingApproval: async () => true });
+
+    return {
+      c,
+      groupConnections: () => groupCount,
+      sendAgentFrame: (frame: Record<string, unknown>) => { agentSock?.send(JSON.stringify(frame)); },
+    };
+  }
+
+  it('session.new connects /ws/group (not /ws/session) and caches participantId', async () => {
+    const { c, groupConnections, sendAgentFrame } = await startGroup({ participantId: 'part-xyz' });
+    const participantEvents: string[] = [];
+    c.on('session:participant', (sid: string) => participantEvents.push(sid));
+
+    sendAgentFrame({ type: 'session.new', payload: { sessionId: 'sess-g1' } });
+    await new Promise(r => setTimeout(r, 120));
+
+    expect(groupConnections()).toBe(1);
+    expect(participantEvents).toContain('sess-g1');
+    const active = (c as unknown as { activeSessions: Map<string, { participantId?: string }> }).activeSessions.get('sess-g1');
+    expect(active?.participantId).toBe('part-xyz');
+    c.stop();
+  });
+
+  it('send() threads mentions + stamps sender.participantId through the /ws/group envelope', async () => {
+    const captured: Record<string, unknown>[] = [];
+    const { c, sendAgentFrame } = await startGroup({ onGroupMessage: f => captured.push(f) });
+
+    sendAgentFrame({ type: 'session.new', payload: { sessionId: 'sess-g1' } });
+    await new Promise(r => setTimeout(r, 120)); // connectGroup + handshake land
+
+    const res = await c.send('sess-g1', {
+      type: 'result.success',
+      payload: { content: 'reply', usage: { totalTokens: 7 } },
+      mentions: ['part-consumer-1'],
+    });
+    expect(res.via).toBe('ws');
+    await new Promise(r => setTimeout(r, 40));
+
+    const replies = captured.filter(f => f['type'] === 'result.success');
+    expect(replies.length).toBe(1);
+    const last = replies[replies.length - 1];
+    expect(last?.['mentions']).toEqual(['part-consumer-1']);
+    const sender = last?.['sender'] as Record<string, unknown> | undefined;
+    expect(sender?.['participantId']).toBe('part-agent-1');
+    c.stop();
+  });
+
+  it('sendTyping() is a no-op in group mode (typing disabled, Plan 4b decision 3)', () => {
+    const client = new ProviderClient({ agentToken: 'agt_test', useGroupChannel: true });
+    const mockSm = { isConnected: vi.fn().mockReturnValue(true), send: vi.fn().mockReturnValue(true) };
+    (client as unknown as { sessionManager: unknown }).sessionManager = mockSm;
+    expect(client.sendTyping('s1')).toBe(false);
+    expect(mockSm.send).not.toHaveBeenCalled();
+  });
+
+  it('sendTyping() still works in session mode (default, backward compat)', () => {
+    const client = new ProviderClient({ agentToken: 'agt_test' }); // useGroupChannel defaults to false
+    const mockSm = { isConnected: vi.fn().mockReturnValue(true), send: vi.fn().mockReturnValue(true) };
+    (client as unknown as { sessionManager: unknown }).sessionManager = mockSm;
+    expect(client.sendTyping('s1')).toBe(true);
+    expect(mockSm.send).toHaveBeenCalledTimes(1);
   });
 });

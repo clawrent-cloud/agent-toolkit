@@ -37,6 +37,11 @@ export interface ProviderClientOptions {
    *  direct activate (#4). Default 5000ms. The welcome normally arrives within ms;
    *  the timeout only guards half-open sockets in pathological cases. */
   activateWelcomeTimeoutMs?: number;
+  /** Opt into the participant-scoped /ws/group channel (Plan 4b) instead of the
+   *  legacy /ws/session one. When true, session WS connect via connectGroup with
+   *  agentToken auth (no sessionToken needed) and the server-assigned participantId
+   *  is cached on each ActiveSession. Default false (fully backward compatible). */
+  useGroupChannel?: boolean;
 }
 
 export interface ProviderCallbacks {
@@ -77,6 +82,8 @@ export class ProviderClient extends EventEmitter {
   private readonly agentReconnectInitialMs: number;
   private readonly agentReconnectMaxDelayMs: number;
   private readonly activateWelcomeTimeoutMs: number;
+  /** Opt into /ws/group (participant-scoped) instead of /ws/session. */
+  private readonly useGroupChannel: boolean;
   /** /ws/agent reconnect state. */
   private agentReconnectAttempts = 0;
   private agentReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,6 +145,7 @@ export class ProviderClient extends EventEmitter {
     this.agentReconnectInitialMs = opts.agentReconnectInitialMs ?? 1_000;
     this.agentReconnectMaxDelayMs = opts.agentReconnectMaxDelayMs ?? 30_000;
     this.activateWelcomeTimeoutMs = opts.activateWelcomeTimeoutMs ?? 5_000;
+    this.useGroupChannel = opts.useGroupChannel ?? false;
   }
 
   get running(): boolean { return this._running; }
@@ -219,12 +227,30 @@ export class ProviderClient extends EventEmitter {
       this.activeSessions.delete(sid);
       callbacks.onSessionEnded?.(active, reason);
     });
+    sm.on('session:participant', (sid: string, participant: { participantId?: unknown }) => {
+      // Cache the server-assigned participantId (group mode) so the host can do
+      // @-routing and outbound envelopes can stamp sender.participantId.
+      const pid = participant?.participantId;
+      if (typeof pid === 'string') {
+        const active = this.activeSessions.get(sid);
+        if (active) active.participantId = pid;
+      }
+      this.emit('session:participant', sid, participant);
+    });
+    sm.on('session:presence', (sid: string, frame: Record<string, unknown>) => {
+      // Presence/ack frames (participant_joined/left, message_ack, blocked) —
+      // forwarded for host observability but never trigger onMessage.
+      this.emit('session:presence', sid, frame);
+    });
   }
 
   private async resumeActive(callbacks: ProviderCallbacks): Promise<void> {
     if (!this.sessionManager) return;
     try {
-      const sessions = await resumeActiveSessions(this.client, this.sessionManager);
+      const sessions = await resumeActiveSessions(this.client, this.sessionManager, {
+        useGroupChannel: this.useGroupChannel,
+        agentToken: this.agentToken,
+      });
       for (const s of sessions) {
         this.activeSessions.set(s.sessionId, s);
         callbacks.onSessionNew?.(s);
@@ -396,9 +422,13 @@ export class ProviderClient extends EventEmitter {
         return;
       }
     }
-    // SessionManager.connect is idempotent (guards on already-connected).
-    // A subsequent session.approved frame will re-enter connect as a no-op.
-    if (sessionToken) {
+    // SessionManager.connect/connectGroup are idempotent (guard on already-connected).
+    // A subsequent session.approved frame will re-enter as a no-op.
+    if (this.useGroupChannel) {
+      // /ws/group: agentToken auth (no sessionToken needed). The participantId is
+      // assigned by the server on connect and cached via session:participant.
+      this.sessionManager?.connectGroup(sessionId, this.agentToken);
+    } else if (sessionToken) {
       this.sessionManager?.connect(sessionId, sessionToken);
     } else {
       this.emit('agent:warning', `session.new for ${sessionId} carried no sessionToken; deferring /ws/session connect until session.approved`);
@@ -419,7 +449,9 @@ export class ProviderClient extends EventEmitter {
     if (sessionToken) active.sessionToken = sessionToken;
     this.activeSessions.set(sessionId, active);
     this.emit('session:approved', active);
-    if (sessionToken) {
+    if (this.useGroupChannel) {
+      this.sessionManager?.connectGroup(sessionId, this.agentToken);
+    } else if (sessionToken) {
       this.sessionManager?.connect(sessionId, sessionToken);
     }
   }
@@ -484,17 +516,21 @@ export class ProviderClient extends EventEmitter {
    */
   async send(
     sessionId: string,
-    message: { type: string; payload: Record<string, unknown> },
+    message: { type: string; payload: Record<string, unknown>; mentions?: string[] },
   ): Promise<{ via: 'ws' | 'rest' }> {
     // Local binding so TS narrows `sm` to NonNullable inside the if-block
     // (this.sessionManager is mutable class state and isn't narrowed by `?.`).
     const sm = this.sessionManager;
     if (sm?.isConnected(sessionId)) {
+      // Pass the full message (incl. mentions) so the group-mode envelope can
+      // stamp the top-level mentions array; the session-mode envelope ignores it.
       const ok = sm.send(sessionId, message);
       if (ok) return { via: 'ws' };
     }
-    // REST fallback
-    await this.client.sendSessionMessage(sessionId, message);
+    // REST fallback — sendSessionMessage's body has no mentions field, and WS is
+    // the group-mode path, so mentions are dropped here (REST is a session-mode
+    // fallback only).
+    await this.client.sendSessionMessage(sessionId, { type: message.type, payload: message.payload });
     return { via: 'rest' };
   }
 
@@ -514,6 +550,10 @@ export class ProviderClient extends EventEmitter {
    * consumer message and while generating a reply; stop once the reply is sent.
    */
   sendTyping(sessionId: string): boolean {
+    // Group mode: /ws/group has no typing short-circuit (ws-group-handler persists
+    // dialogue.typing into message history) — typing is disabled (Plan 4b decision 3).
+    // The backend may add a typing short-circuit in a later version; until then no-op.
+    if (this.useGroupChannel) return false;
     const sm = this.sessionManager;
     if (!sm?.isConnected(sessionId)) return false;
     const now = Date.now();
