@@ -256,16 +256,16 @@ describe('ProviderClient.send', () => {
     wss.close();
   });
 
-  it('returns via:rest when no session WS (REST fallback)', async () => {
-    // stub sendSessionMessage to avoid real HTTP
+  it('returns delivered:false when no session WS (no REST fallback — M5.6 removed the send endpoint)', async () => {
     const c = new ProviderClient({
       apiUrl: `http://localhost:${port}`,
       wsUrl: `ws://localhost:${port}`,
       agentToken: 'agt_x',
     });
-    c['client'].sendSessionMessage = async () => ({ delivered: true }) as never;
+    // No WS connected; send is WS-only now (REST fallback gone post-M5.6).
     const res = await c.send('sess-1', { type: 'dialogue.message', payload: { content: 'hi' } });
-    expect(res.via).toBe('rest');
+    expect(res.via).toBe('ws');
+    expect(res.delivered).toBe(false);
   });
 });
 

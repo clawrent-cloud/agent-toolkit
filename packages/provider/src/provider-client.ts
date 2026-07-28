@@ -533,7 +533,7 @@ export class ProviderClient extends EventEmitter {
   async send(
     sessionId: string,
     message: { type: string; payload: Record<string, unknown>; mentions?: string[] },
-  ): Promise<{ via: 'ws' | 'rest' }> {
+  ): Promise<{ via: 'ws'; delivered: boolean }> {
     // Local binding so TS narrows `sm` to NonNullable inside the if-block
     // (this.sessionManager is mutable class state and isn't narrowed by `?.`).
     const sm = this.sessionManager;
@@ -541,13 +541,15 @@ export class ProviderClient extends EventEmitter {
       // Pass the full message (incl. mentions) so the group-mode envelope can
       // stamp the top-level mentions array; the session-mode envelope ignores it.
       const ok = sm.send(sessionId, message);
-      if (ok) return { via: 'ws' };
+      if (ok) return { via: 'ws', delivered: true };
     }
-    // REST fallback — sendSessionMessage's body has no mentions field, and WS is
-    // the group-mode path, so mentions are dropped here (REST is a session-mode
-    // fallback only).
-    await this.client.sendSessionMessage(sessionId, { type: message.type, payload: message.payload });
-    return { via: 'rest' };
+    // WS unavailable (paused / reconnecting / not yet attached). No REST fallback —
+    // the legacy POST /api/sessions/:id/messages endpoint was removed in M5.6 (M5.6
+    // retired the legacy /ws/session send path), and /ws/group is the only send
+    // channel. The provider is WS-connected while active; if WS is down the agent
+    // isn't receiving messages anyway. Caller may retry (or treat as dropped).
+    this.emit('agent:warning', `send dropped (/ws/group not open) for session ${sessionId}`);
+    return { via: 'ws', delivered: false };
   }
 
   /**
