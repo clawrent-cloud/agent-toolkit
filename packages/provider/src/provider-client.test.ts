@@ -913,8 +913,10 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
     c: ProviderClient;
     groupConnections: () => number;
     sendAgentFrame: (frame: Record<string, unknown>) => void;
+    closeGroupWith: (code: number, reason?: string) => void;
   }> {
     let agentSock: WebSocket | undefined;
+    let groupSock: WebSocket | undefined;
     let groupCount = 0;
     const participantId = opts.participantId ?? 'part-agent-1';
     wss.on('connection', (sock, req) => {
@@ -927,6 +929,7 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
           if (msg.type === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
         });
       } else if (url.startsWith('/ws/group')) {
+        groupSock = sock;
         groupCount++;
         sock.send(JSON.stringify({
           type: 'system.connected',
@@ -952,6 +955,7 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
       c,
       groupConnections: () => groupCount,
       sendAgentFrame: (frame: Record<string, unknown>) => { agentSock?.send(JSON.stringify(frame)); },
+      closeGroupWith: (code: number, reason = '') => { try { groupSock?.close(code, reason); } catch { /* already closed */ } },
     };
   }
 
@@ -1008,5 +1012,32 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
     (client as unknown as { sessionManager: unknown }).sessionManager = mockSm;
     expect(client.sendTyping('s1')).toBe(true);
     expect(mockSm.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('Phase 2: 4020 pause → session:paused (no reconnect); participant_resumed → reconnect /ws/group', async () => {
+    const { c, groupConnections, sendAgentFrame, closeGroupWith } = await startGroup();
+
+    // 1. session.new → first /ws/group connection
+    sendAgentFrame({ type: 'session.new', payload: { sessionId: 'sess-g1' } });
+    await new Promise(r => setTimeout(r, 120));
+    expect(groupConnections()).toBe(1);
+
+    // 2. server pauses (4020 close) → session:paused, NO auto-reconnect
+    const paused = vi.fn();
+    c.on('session:paused', paused);
+    closeGroupWith(4020, 'paused by consumer');
+    await new Promise(r => setTimeout(r, 150)); // a reconnect would fire by now
+    expect(paused).toHaveBeenCalledWith('sess-g1', expect.any(String));
+    expect(groupConnections()).toBe(1); // still 1 — no auto-reconnect on pause
+
+    // 3. resume signal on /ws/agent → reconnect /ws/group
+    const resumed = vi.fn();
+    c.on('session:resumed', resumed);
+    sendAgentFrame({ type: 'session.participant_resumed', payload: { sessionId: 'sess-g1', participantId: 'part-agent-1' } });
+    await new Promise(r => setTimeout(r, 120));
+
+    expect(resumed).toHaveBeenCalledWith('sess-g1');
+    expect(groupConnections()).toBe(2); // reconnected
+    c.stop();
   });
 });

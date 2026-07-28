@@ -8,12 +8,20 @@ import WebSocket from 'ws';
 const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004]);
 
 /** Backend /ws/group close codes that mean the participant can never (re)attach.
- * Aligned with apps/platform-api ws-group-handler.ts:
+ * Aligned with apps/platform-api ws-group-handler.ts + group-close-codes.ts:
  *  4000 missing query params, 4011 invalid/expired JWT, 4012 invalid agent token,
  *  4013 no active participant for this identity, 4014 session not found,
- *  4015 session not active. 4009 (replaced by a newer connection) is NOT terminal
- *  — it is a normal "reconnect" signal handled by the non-terminal retry path. */
-const GROUP_TERMINAL_CLOSE_CODES = new Set([4000, 4011, 4012, 4013, 4014, 4015]);
+ *  4015 session not active, 4021 participant ended (terminal).
+ *  4009 (replaced by a newer connection) is NOT terminal — normal reconnect signal.
+ *  4020 (paused) is NOT terminal either but is handled separately (no reconnect —
+ *  the host re-connects on `session.participant_resumed`). */
+const GROUP_TERMINAL_CLOSE_CODES = new Set([4000, 4011, 4012, 4013, 4014, 4015, 4021]);
+
+/** /ws/group close code: participant paused by the consumer (Phase 1). The server
+ *  sets the participant row to status='paused', so reconnect attempts return 4013
+ *  until resume. We therefore do NOT auto-reconnect — we emit 'session:paused' and
+ *  wait for the host (ProviderClient) to reconnect on `session.participant_resumed`. */
+const GROUP_PAUSED_CLOSE_CODE = 4020;
 
 export interface SessionConnection {
   sessionId: string;
@@ -235,7 +243,15 @@ export class SessionManager extends EventEmitter {
   ): void {
     this.clearHeartbeat(conn);
 
-    // Terminal codes (bad params / auth / participant / session state) — never retry.
+    // Paused (Phase 1): do NOT reconnect. The server has status='paused' (reconnect
+    // would 4013). Drop the connection + emit; the host reconnects on resume.
+    if (code === GROUP_PAUSED_CLOSE_CODE) {
+      this.sessions.delete(sessionId);
+      this.emit('session:paused', sessionId, `paused (code ${code}: ${reason.toString()})`);
+      return;
+    }
+
+    // Terminal codes (bad params / auth / participant / session state / ended) — never retry.
     if (GROUP_TERMINAL_CLOSE_CODES.has(code)) {
       this.sessions.delete(sessionId);
       this.emit('session:dead', sessionId, `group session rejected (code ${code}: ${reason.toString()})`);

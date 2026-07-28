@@ -242,6 +242,12 @@ export class ProviderClient extends EventEmitter {
       // forwarded for host observability but never trigger onMessage.
       this.emit('session:presence', sid, frame);
     });
+    sm.on('session:paused', (sid: string, reason: string) => {
+      // Phase 1: server paused this participant (4020 close). The ActiveSession
+      // stays tracked so the host knows the session is still alive (just paused);
+      // reconnect happens on `session.participant_resumed` (handleAgentMessage).
+      this.emit('session:paused', sid, reason);
+    });
   }
 
   private async resumeActive(callbacks: ProviderCallbacks): Promise<void> {
@@ -383,6 +389,16 @@ export class ProviderClient extends EventEmitter {
       case 'agent.status_updated':
         this.emit('agent:status', payload);
         return;
+      case 'session.participant_resumed': {
+        // Phase 1: consumer resumed this agent after a pause → reconnect /ws/group.
+        // (Only meaningful in group mode; in session mode there's no pause concept.)
+        const sid = (payload as { sessionId?: unknown } | undefined)?.sessionId;
+        if (this.useGroupChannel && typeof sid === 'string') {
+          this.sessionManager?.connectGroup(sid, this.agentToken);
+          this.emit('session:resumed', sid);
+        }
+        return;
+      }
       default:
         // Unknown frame type — ignore gracefully (no crash, no emit).
         return;

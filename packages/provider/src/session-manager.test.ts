@@ -176,6 +176,42 @@ describe('SessionManager /ws/group mode', () => {
     expect(sm.activeCount).toBe(0);
   });
 
+  it('Phase 1: paused close 4020 emits session:paused and does NOT reconnect (resume reconnects externally)', async () => {
+    const seenConnections: WebSocket[] = [];
+    wss.on('connection', s => seenConnections.push(s));
+    mockGroupServer(wss, { terminalCode: 4020 });
+
+    const reconnecting = vi.fn();
+    const dead = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+    sm.on('session:dead', dead);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    const [sid, reason] = await waitFor<string>(sm, 'session:paused');
+
+    expect(sid).toBe('sess-g1');
+    expect(String(reason)).toContain('4020'); // emit includes the code (like session:dead)
+    await new Promise(r => setTimeout(r, 120)); // a would-be reconnect would fire by now
+    expect(reconnecting).not.toHaveBeenCalled(); // paused → no auto-reconnect
+    expect(dead).not.toHaveBeenCalled(); // paused is NOT terminal
+    expect(seenConnections.length).toBe(1); // no reconnect connection
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it('Phase 1: ended close 4021 is terminal (session:dead, no reconnect)', async () => {
+    mockGroupServer(wss, { terminalCode: 4021 });
+    const reconnecting = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    const [, reason] = await waitFor<string>(sm, 'session:dead');
+
+    expect(String(reason)).toContain('4021');
+    await new Promise(r => setTimeout(r, 80));
+    expect(reconnecting).not.toHaveBeenCalled();
+    expect(sm.activeCount).toBe(0);
+  });
+
   it('routes presence/ack frames to session:presence, NOT session:message', async () => {
     mockGroupServer(wss, {
       extraFrames: [
