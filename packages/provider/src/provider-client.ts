@@ -568,10 +568,7 @@ export class ProviderClient extends EventEmitter {
    * consumer message and while generating a reply; stop once the reply is sent.
    */
   sendTyping(sessionId: string): boolean {
-    // Group mode: /ws/group has no typing short-circuit (ws-group-handler persists
-    // dialogue.typing into message history) — typing is disabled (Plan 4b decision 3).
-    // The backend may add a typing short-circuit in a later version; until then no-op.
-    if (this.useGroupChannel) return false;
+    // group mode no-op removed: api ws-group-handler short-circuits dialogue.typing (Plan 4b).
     const sm = this.sessionManager;
     if (!sm?.isConnected(sessionId)) return false;
     const now = Date.now();

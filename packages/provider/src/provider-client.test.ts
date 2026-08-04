@@ -998,12 +998,16 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
     c.stop();
   });
 
-  it('sendTyping() is a no-op in group mode (typing disabled, Plan 4b decision 3)', () => {
+  it('sendTyping() works in group mode (api short-circuits dialogue.typing, Plan 4b)', () => {
     const client = new ProviderClient({ agentToken: 'agt_test', useGroupChannel: true });
     const mockSm = { isConnected: vi.fn().mockReturnValue(true), send: vi.fn().mockReturnValue(true) };
     (client as unknown as { sessionManager: unknown }).sessionManager = mockSm;
-    expect(client.sendTyping('s1')).toBe(false);
-    expect(mockSm.send).not.toHaveBeenCalled();
+    expect(client.sendTyping('s1')).toBe(true);
+    expect(mockSm.send).toHaveBeenCalledTimes(1);
+    expect(mockSm.send).toHaveBeenCalledWith('s1', {
+      type: 'dialogue.typing',
+      payload: {},
+    });
   });
 
   it('sendTyping() still works in session mode (default, backward compat)', () => {
