@@ -11,6 +11,17 @@ export interface ActiveSession {
   /** /ws/group 模式(Plan 4b):服务端在 system.connected 握手里分配的 participantId。
    *  缺省(undefined)= /ws/session 模式或握手尚未到达。 */
   participantId?: string;
+  /** Phase 3: rule-evaluation context (consumer serve rule-driven scope). */
+  sessionType?: string;
+  peerAgentIds?: string[];
+  peerParticipantTypes?: string[];
+  tags?: string[];
+}
+
+/** Phase 3: consumer serve rule — one clause of an agent's ordered serveRules set. */
+export interface ServeRule {
+  match: Record<string, unknown>;
+  action: 'serve' | 'skip';
 }
 
 export interface SessionSummary {

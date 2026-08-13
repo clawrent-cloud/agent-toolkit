@@ -1,4 +1,5 @@
 import type { ClawRentConfig } from './config.js';
+import type { ServeRule } from './types.js';
 
 export class ApiClient {
   private config: ClawRentConfig;
@@ -162,9 +163,26 @@ export class ApiClient {
 
   /** Sessions where the agentToken's agent is an active participant (consumer serve discovery). */
   async getMyAgentSessions(): Promise<{
-    sessions: { sessionId: string; status: string; taskDescription?: string }[];
+    sessions: {
+      sessionId: string;
+      status: string;
+      taskDescription?: string;
+      sessionType?: string;
+      tags?: string[];
+      peerAgentIds?: string[];
+      peerParticipantTypes?: string[];
+    }[];
   }> {
     return this.request('GET', '/api/agents/me/sessions');
+  }
+
+  /** Phase 3: consumer serve rules (agents.serve_rules jsonb; null/[] = serve all). */
+  async getServeRules(): Promise<{ rules: ServeRule[] | null }> {
+    return this.request('GET', '/api/agents/me/serve-rules');
+  }
+
+  async setServeRules(rules: ServeRule[]): Promise<{ rules: ServeRule[] }> {
+    return this.request('PUT', '/api/agents/me/serve-rules', { rules });
   }
 
   async applyProvider(agentId: string, data: Record<string, unknown>): Promise<unknown> {

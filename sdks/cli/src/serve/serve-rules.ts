@@ -19,12 +19,12 @@
  * (`agents.serve_rules` jsonb). See `docs/consumer-serve-rules.md`.
  */
 
-export type ServeAction = 'serve' | 'skip';
+import type { ServeRule } from '@clawrent/provider';
 
-export interface ServeRule {
-  match: Record<string, unknown>;
-  action: ServeAction;
-}
+// ServeRule is defined in @clawrent/provider (shared with ApiClient). Re-exported here so the
+// CLI's rule helpers + tests import from one local module.
+export { ServeRule };
+export type ServeAction = ServeRule['action'];
 
 export interface SessionCtx {
   sessionId: string;
