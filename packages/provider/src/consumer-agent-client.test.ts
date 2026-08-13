@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { ConsumerAgentClient } from './consumer-agent-client.js';
 
 let wss: WebSocketServer;
@@ -13,9 +13,27 @@ afterEach(() => { wss.close(); });
 
 /** Minimal /ws/group mock: sends system.connected handshake with a participantId,
  *  acks heartbeats, and optionally captures inbound frames. */
-function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
+function mockGroupServer(opts: {
+  participantId?: string;
+  onMessage?: (frame: Record<string, unknown>) => void;
+  onControl?: (sock: WebSocket) => void;
+} = {}): void {
   const participantId = opts.participantId ?? 'part-cons-1';
-  wss.on('connection', (sock) => {
+  wss.on('connection', (sock, req) => {
+    const path = (req.url ?? '').split('?')[0];
+    if (path === '/ws/agent/consumer') {
+      // Phase 3 control channel mock: welcome + heartbeat ack; test pushes session.new/ended.
+      sock.send(JSON.stringify({ type: 'agent.connected', payload: { agentId: 'agent-1' } }));
+      sock.on('message', (m) => {
+        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'system.heartbeat') {
+          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+        }
+      });
+      opts.onControl?.(sock);
+      return;
+    }
+    // /ws/group mock (existing)
     sock.send(JSON.stringify({
       type: 'system.connected',
       payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
@@ -196,6 +214,41 @@ describe('ConsumerAgentClient re-emits', () => {
     await new Promise((r) => setTimeout(r, 400)); // reconnect window
 
     expect(events).toContain('sess-1');
+    c.stop();
+  });
+});
+
+describe('ConsumerAgentClient control channel (/ws/agent/consumer)', () => {
+  it('emits control:connected on open + control:session.new on push', async () => {
+    let controlSock: WebSocket | undefined;
+    mockGroupServer({ onControl: (s) => { controlSock = s; } });
+    const c = makeClient();
+    const events: string[] = [];
+    c.on('control:connected', () => events.push('connected'));
+    c.on('control:session.new', (p) => events.push('new:' + (p as { sessionId: string }).sessionId));
+
+    await c.start({ sessionIds: [], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(events).toContain('connected');
+    controlSock?.send(JSON.stringify({ type: 'session.new', payload: { sessionId: 'sess-push' } }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(events).toContain('new:sess-push');
+    c.stop();
+  });
+
+  it('emits control:session.ended on push', async () => {
+    let controlSock: WebSocket | undefined;
+    mockGroupServer({ onControl: (s) => { controlSock = s; } });
+    const c = makeClient();
+    const ended: string[] = [];
+    c.on('control:session.ended', (p) => ended.push((p as { sessionId: string }).sessionId));
+
+    await c.start({ sessionIds: [], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 80));
+    controlSock?.send(JSON.stringify({ type: 'session.ended', payload: { sessionId: 'sess-end' } }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(ended).toContain('sess-end');
     c.stop();
   });
 });

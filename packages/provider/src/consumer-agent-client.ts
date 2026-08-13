@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { WebSocket } from 'ws';
 import { SessionManager } from './session-manager.js';
 import { ApiClient } from './api-client.js';
 import { InMemoryCursorStore } from './cursor.js';
@@ -8,12 +9,16 @@ import type { ActiveSession } from './types.js';
 /**
  * ConsumerAgentClient — serves a consumer-owned agent in group sessions.
  *
- * Unlike `ProviderClient`, this does NOT connect /ws/agent, does NOT call
- * `activateAgent` (that endpoint requires a provider profile, which consumer
- * agents don't have), and does NOT receive `session.new`/`session.approved`
- * push (consumer agents aren't rented). It connects directly to /ws/group for
- * each session the consumer agent participates in, dedupes inbound messages
- * by cursor, and exposes onMessage + send (stamping sender.side='consumer').
+ * Unlike `ProviderClient`, this does NOT call `activateAgent` (that endpoint
+ * requires a provider profile, which consumer agents don't have). Phase 3: it
+ * DOES connect /ws/agent/consumer — a push control channel symmetric to the
+ * provider's /ws/agent — to receive `session.new` / `session.ended` pushes
+ * (re-emitted as `control:session.new` / `control:session.ended`). The caller
+ * (consumer serve daemon) uses these to discover new sessions instantly; if the
+ * control channel drops, it emits `control:disconnected` and the caller's poll
+ * loop is the fallback. It also connects directly to /ws/group per session,
+ * dedupes inbound messages by cursor, and exposes onMessage + send (stamping
+ * sender.side='consumer').
  *
  * Lifecycle: construct -> start({ sessionIds, onMessage }) -> stop().
  */
@@ -48,6 +53,11 @@ export class ConsumerAgentClient extends EventEmitter {
   private readonly inflight = new Map<string, Promise<void>>();
   private boundCallbacks: ConsumerAgentCallbacks | null = null;
   private _running = false;
+  // Phase 3: /ws/agent/consumer push control channel (session.new/session.ended).
+  private controlWs: WebSocket | null = null;
+  private controlHeartbeat: ReturnType<typeof setInterval> | null = null;
+  private controlReconnect: ReturnType<typeof setTimeout> | null = null;
+  private controlStopped = false;
 
   constructor(opts: ConsumerAgentClientOptions) {
     super();
@@ -95,6 +105,7 @@ export class ConsumerAgentClient extends EventEmitter {
       this.sessionManager.connectGroup(sid, this.agentToken);
     }
     this._running = true;
+    this.connectControlChannel();
     this.emit('started', this.agentId);
   }
 
@@ -207,8 +218,77 @@ export class ConsumerAgentClient extends EventEmitter {
     this.sessionManager?.forceDisconnectAll();
   }
 
+  /** Phase 3: connect the /ws/agent/consumer push control channel. Reconnects on
+   *  close (5s) until stop(); emits control:connected/disconnected/session.new/
+   *  session.ended/error. */
+  private connectControlChannel(): void {
+    if (!this.agentId) return;
+    this.controlStopped = false;
+    const url = `${this.client.wsUrl}/ws/agent/consumer?token=${encodeURIComponent(this.agentToken)}`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      this.emit('control:error', err);
+      this.scheduleControlReconnect();
+      return;
+    }
+    this.controlWs = ws;
+
+    ws.on('open', () => {
+      this.emit('control:connected');
+      this.controlHeartbeat = setInterval(() => {
+        if (this.controlWs?.readyState === WebSocket.OPEN) {
+          try { this.controlWs.send(JSON.stringify({ type: 'system.heartbeat' })); } catch { /* ignore */ }
+        }
+      }, this.heartbeatIntervalMs);
+    });
+
+    ws.on('message', (raw) => {
+      let msg: Record<string, unknown>;
+      try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
+      const type = msg['type'];
+      if (type === 'session.new') {
+        this.emit('control:session.new', (msg['payload'] ?? {}) as Record<string, unknown>);
+      } else if (type === 'session.ended') {
+        this.emit('control:session.ended', (msg['payload'] ?? {}) as Record<string, unknown>);
+      }
+      // agent.connected welcome / heartbeat_ack / others: ignored
+    });
+
+    ws.on('close', () => {
+      this.clearControlTimers();
+      this.emit('control:disconnected');
+      if (!this.controlStopped) this.scheduleControlReconnect();
+    });
+
+    ws.on('error', (err) => {
+      this.emit('control:error', err);
+      // 'close' follows and schedules reconnect
+    });
+  }
+
+  private scheduleControlReconnect(): void {
+    if (this.controlStopped || !this._running) return;
+    this.clearControlTimers();
+    this.controlReconnect = setTimeout(() => {
+      if (!this.controlStopped && this._running) this.connectControlChannel();
+    }, 5_000);
+  }
+
+  private clearControlTimers(): void {
+    if (this.controlHeartbeat) { clearInterval(this.controlHeartbeat); this.controlHeartbeat = null; }
+    if (this.controlReconnect) { clearTimeout(this.controlReconnect); this.controlReconnect = null; }
+  }
+
   stop(): void {
     this._running = false;
+    this.controlStopped = true;
+    this.clearControlTimers();
+    if (this.controlWs) {
+      try { this.controlWs.close(); } catch { /* ignore */ }
+      this.controlWs = null;
+    }
     this.sessionManager?.disconnectAll();
     this.activeSessions.clear();
     this.client.setAgentToken(null);
