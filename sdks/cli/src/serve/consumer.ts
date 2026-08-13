@@ -228,7 +228,11 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
     bridge.writeNotification('session.error', { sessionId: sid, message: err.message }),
   );
 
-  // Phase 3: control channel (/ws/agent/consumer) — push session.new/ended
+  // Phase 3: control channel (/ws/agent/consumer) — push session.new/ended + connection state
+  consumer.on('control:connected', () => bridge.writeNotification('control.connected', { agentId }));
+  consumer.on('control:error', () =>
+    bridge.writeNotification('control.error', { message: 'control channel error (poll fallback active)' }),
+  );
   consumer.on('control:session.new', () => {
     // Push says a new session is visible — re-discover for full ctx + decide (push accelerates
     // past the poll interval). Idempotent: applyDecision skips already-discovered sessions.
