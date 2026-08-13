@@ -160,6 +160,13 @@ export class ApiClient {
     return this.request('GET', '/api/agents/me/agent');
   }
 
+  /** Sessions where the agentToken's agent is an active participant (consumer serve discovery). */
+  async getMyAgentSessions(): Promise<{
+    sessions: { sessionId: string; status: string; taskDescription?: string }[];
+  }> {
+    return this.request('GET', '/api/agents/me/sessions');
+  }
+
   async applyProvider(agentId: string, data: Record<string, unknown>): Promise<unknown> {
     return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/apply-provider`, data);
   }
