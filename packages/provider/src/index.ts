@@ -1,4 +1,4 @@
-export const PROVIDER_PACKAGE_VERSION = '0.4.1';
+export const PROVIDER_PACKAGE_VERSION = '0.4.3';
 
 export { ApiClient } from './api-client.js';
 export type { ClawRentConfig } from './config.js';
@@ -11,3 +11,5 @@ export { resumeActiveSessions, diffSessionStates } from './helpers.js';
 export type { ActiveSession, SessionSummary, SessionDiff } from './types.js';
 export { ProviderClient } from './provider-client.js';
 export type { ProviderClientOptions, ProviderCallbacks } from './provider-client.js';
+export { ConsumerAgentClient } from './consumer-agent-client.js';
+export type { ConsumerAgentClientOptions, ConsumerAgentCallbacks } from './consumer-agent-client.js';

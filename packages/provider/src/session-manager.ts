@@ -23,6 +23,11 @@ const GROUP_TERMINAL_CLOSE_CODES = new Set([4000, 4011, 4012, 4013, 4014, 4015, 
  *  wait for the host (ProviderClient) to reconnect on `session.participant_resumed`. */
 const GROUP_PAUSED_CLOSE_CODE = 4020;
 
+/** /ws/group close code: per-token reconnect-storm guard (2026-08-03 OOM 后引入).
+ *  NOT terminal — the close reason carries "retry after Ns"; the client MUST
+ *  wait that window before reconnecting or it re-trips the guard and storms. */
+const GROUP_RATE_LIMITED_CLOSE_CODE = 4030;
+
 export interface SessionConnection {
   sessionId: string;
   /** /ws/session: the session token. /ws/group: empty (auth is by agentToken). */
@@ -248,6 +253,24 @@ export class SessionManager extends EventEmitter {
     if (code === GROUP_PAUSED_CLOSE_CODE) {
       this.sessions.delete(sessionId);
       this.emit('session:paused', sessionId, `paused (code ${code}: ${reason.toString()})`);
+      return;
+    }
+
+    // Rate-limited (reconnect-storm guard): the close reason carries
+    // "retry after Ns". Wait the full window before reconnecting — retrying early
+    // re-trips the guard and produces a retry→4030→retry storm. Don't burn a
+    // reconnectAttempt (rate-limit is a server-side gate, not a connection failure).
+    if (code === GROUP_RATE_LIMITED_CLOSE_CODE) {
+      const m = reason.toString().match(/retry after (\d+)s/i);
+      const retryAfterSec = m ? Number(m[1]) : 0;
+      const delay = retryAfterSec > 0
+        ? retryAfterSec * 1000
+        : Math.min(1000 * Math.pow(2, conn.reconnectAttempts), this.maxReconnectDelay);
+      this.emit('session:reconnecting', sessionId, delay);
+      setTimeout(() => {
+        this.sessions.delete(sessionId);
+        this.connectGroup(sessionId, agentToken);
+      }, delay);
       return;
     }
 

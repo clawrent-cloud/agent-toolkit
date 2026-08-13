@@ -250,6 +250,27 @@ describe('SessionManager /ws/group mode', () => {
 
     expect((captured as Record<string, unknown>)['type']).toBe('dialogue.typing');
   });
+
+  it('on 4030 rate-limit, reconnect delay = reason retryAfterSec (not the exponential backoff)', async () => {
+    wss.on('connection', (sock) => {
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId: 'part-1', participantType: 'agent', side: 'provider', agentId: 'agent-1' } },
+      }));
+      setTimeout(() => { try { sock.close(4030, 'rate limited, retry after 5s'); } catch { /* closed */ } }, 10);
+    });
+
+    const reconnecting = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    await waitFor(sm, 'session:connected');
+    await waitFor(sm, 'session:reconnecting');
+
+    // Server's reconnect-storm guard tells us to wait retryAfterSec; honoring it
+    // (not the 1s exponential backoff) is what stops retry → 4030 → retry storms.
+    expect(reconnecting).toHaveBeenCalledWith('sess-g1', 5000);
+  });
 });
 
 describe('SessionManager /ws/session mode (backward compatibility)', () => {

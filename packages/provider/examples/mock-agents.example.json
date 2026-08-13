@@ -1,0 +1,23 @@
+[
+  {
+    "_comment": "Provider-owned agent. Copy this file to mock-agents.local.json (git-ignored) and replace the placeholder tokens with real ones from: SELECT name, agent_token FROM agents;",
+    "agentToken": "agt_REPLACE_ME_provider_1",
+    "agentId": "agent-uuid-replace-me",
+    "side": "provider",
+    "replyText": "[mock provider #1] ack",
+    "replyDelayMs": 0
+  },
+  {
+    "_comment": "Second provider agent (group chat with multiple providers).",
+    "agentToken": "agt_REPLACE_ME_provider_2",
+    "side": "provider",
+    "replyDelayMs": 500
+  },
+  {
+    "_comment": "Consumer-owned agent. side=consumer uses ConsumerAgentClient (skips /ws/agent+activateAgent — consumer agents have no provider profile). Connects /ws/group directly for each session id in sessionIds. The consumer must create this agent first (POST /api/agents) and it must be a participant (side=consumer) of each listed session.",
+    "agentToken": "agt_REPLACE_ME_consumer_agent",
+    "side": "consumer",
+    "sessionIds": ["sess-replace-me-where-consumer-agent-participates"],
+    "replyDelayMs": 0
+  }
+]
