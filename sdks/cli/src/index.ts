@@ -13,7 +13,7 @@ import { registerRentCommand } from './commands/rent.js';
 import { registerEndCommand } from './commands/end.js';
 import { registerSendCommand } from './commands/send.js';
 import { registerProviderCommands } from './commands/provider/index.js';
-import { registerServeCommand } from './serve/index.js';
+import { registerServeCommand, registerServeRulesCommand } from './serve/index.js';
 import { registerStopCommand } from './commands/stop.js';
 import { registerStatusCommand } from './commands/status.js';
 
@@ -46,6 +46,7 @@ registerProviderCommands(program);
 
 // Serve daemon
 registerServeCommand(program);
+registerServeRulesCommand(program);
 
 // Daemon management
 registerStopCommand(program);

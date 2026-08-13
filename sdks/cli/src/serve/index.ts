@@ -54,6 +54,11 @@ export function registerServeCommand(program: Command): void {
             try {
               const agent = await client.getMyAgent();
               agentId = agent['id'] as string;
+              const serveHosting = (agent['serveHosting'] as string) ?? 'self';
+              if (serveHosting === 'platform') {
+                printError('This agent is platform-hosted (serveHosting=platform). Platform hosting is not implemented until phase 4.');
+                process.exit(1);
+              }
             } catch {
               printError('Failed to resolve agent from token. Is the token valid?');
               process.exit(1);
@@ -115,6 +120,52 @@ export function registerServeCommand(program: Command): void {
 
         await runDaemon(opts);
       } catch (err: unknown) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+}
+
+/** Phase 3: `clawrent serve-rules` — manage consumer serve rules (rule-driven serve scope). */
+export function registerServeRulesCommand(program: Command): void {
+  const cmd = program
+    .command('serve-rules')
+    .description('Manage consumer serve rules (rule-driven serve scope; phase 3)');
+
+  cmd
+    .command('get')
+    .description('Print the current serve rules as JSON (null = serve all)')
+    .requiredOption('--agent-token <token>', 'Agent token (agt_clawrent_*)')
+    .action(async (opts: { agentToken: string }) => {
+      try {
+        const config = loadConfig();
+        const client = new ApiClient(config);
+        client.setAgentToken(opts.agentToken);
+        const { rules } = await client.getServeRules();
+        console.log(JSON.stringify(rules, null, 2));
+      } catch (err) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command('set')
+    .description('Set serve rules from a JSON file (array of {match, action:"serve"|"skip"})')
+    .requiredOption('--agent-token <token>', 'Agent token (agt_clawrent_*)')
+    .requiredOption('--file <path>', 'JSON file containing the rules array')
+    .action(async (opts: { agentToken: string; file: string }) => {
+      try {
+        const { readFile } = await import('node:fs/promises');
+        const raw = await readFile(opts.file, 'utf8');
+        const rules = JSON.parse(raw);
+        if (!Array.isArray(rules)) throw new Error('Rules file must contain a JSON array');
+        const config = loadConfig();
+        const client = new ApiClient(config);
+        client.setAgentToken(opts.agentToken);
+        const res = await client.setServeRules(rules);
+        printSuccess(`Set ${res.rules.length} serve rule(s).`);
+      } catch (err) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);
       }
