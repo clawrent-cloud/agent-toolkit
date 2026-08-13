@@ -66,6 +66,11 @@ export class ConsumerAgentClient extends EventEmitter {
 
   get running(): boolean { return this._running; }
   get currentAgentId(): string | null { return this.agentId; }
+  /** Live set of active session ids (snapshot copy). Used by the serve
+   *  discovery poll loop to diff against newly-discovered sessions. */
+  get activeSessionIds(): string[] {
+    return [...this.activeSessions.keys()];
+  }
 
   async start(opts: ConsumerAgentCallbacks & { sessionIds: string[] }): Promise<void> {
     if (this._running) throw new Error('ConsumerAgentClient already started');
@@ -93,6 +98,15 @@ export class ConsumerAgentClient extends EventEmitter {
     this.emit('started', this.agentId);
   }
 
+  /** Connect a new session after start() (used by the serve discovery poll loop).
+   *  Idempotent: no-op if not running or session already active. */
+  addSession(sessionId: string): void {
+    if (!this._running || !this.sessionManager) return;
+    if (this.activeSessions.has(sessionId)) return;
+    this.activeSessions.set(sessionId, { sessionId, sessionToken: '' });
+    this.sessionManager.connectGroup(sessionId, this.agentToken);
+  }
+
   private bindSessionManager(): void {
     const sm = this.sessionManager;
     if (!sm) return;
@@ -113,6 +127,12 @@ export class ConsumerAgentClient extends EventEmitter {
       const active = this.activeSessions.get(sid) ?? { sessionId: sid, sessionToken: '' };
       this.activeSessions.delete(sid);
       this.boundCallbacks?.onSessionDead?.(active, reason);
+    });
+    sm.on('session:disconnected', (sid: string, reason: string) => {
+      this.emit('session:disconnected', sid, reason);
+    });
+    sm.on('session:reconnecting', (sid: string, delay: number) => {
+      this.emit('session:reconnecting', sid, delay);
     });
     sm.on('session:message', (sid: string, message: Record<string, unknown>) => {
       const prev = this.inflight.get(sid) ?? Promise.resolve();

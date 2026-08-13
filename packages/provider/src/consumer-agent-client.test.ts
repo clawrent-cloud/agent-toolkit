@@ -137,3 +137,176 @@ describe('ConsumerAgentClient', () => {
     c.stop();
   });
 });
+
+describe('ConsumerAgentClient.addSession', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
+    const participantId = opts.participantId ?? 'part-cons-1';
+    wss.on('connection', (sock) => {
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
+      }));
+      sock.on('message', (m) => {
+        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'system.heartbeat') {
+          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+          return;
+        }
+        opts.onMessage?.(msg);
+      });
+    });
+  }
+
+  function makeClient(): ConsumerAgentClient {
+    return new ConsumerAgentClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_cons_xxx',
+      agentId: 'agent-1',
+      heartbeatIntervalMs: 100,
+    });
+  }
+
+  it('connects a new session after start', async () => {
+    mockGroupServer({ participantId: 'part-1' });
+    const c = makeClient();
+    const connected: string[] = [];
+    c.on('session:connected', (sid: string) => connected.push(sid));
+
+    await c.start({ sessionIds: [], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 50));
+
+    c.addSession('sess-new');
+    await new Promise((r) => setTimeout(r, 150)); // WS connect + handshake
+
+    expect(connected).toContain('sess-new');
+    c.stop();
+  });
+
+  it('is idempotent (second call for an active session is a no-op)', async () => {
+    mockGroupServer({ participantId: 'part-1' });
+    const c = makeClient();
+    await c.start({ sessionIds: ['sess-1'], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(() => c.addSession('sess-1')).not.toThrow();
+    c.stop();
+  });
+
+  it('is a no-op before start', () => {
+    const c = makeClient();
+    expect(() => c.addSession('sess-1')).not.toThrow();
+    expect(c.running).toBe(false);
+  });
+});
+
+describe('ConsumerAgentClient.activeSessionIds getter', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
+    const participantId = opts.participantId ?? 'part-cons-1';
+    wss.on('connection', (sock) => {
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
+      }));
+      sock.on('message', (m) => {
+        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'system.heartbeat') {
+          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+          return;
+        }
+        opts.onMessage?.(msg);
+      });
+    });
+  }
+
+  function makeClient(): ConsumerAgentClient {
+    return new ConsumerAgentClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_cons_xxx',
+      agentId: 'agent-1',
+      heartbeatIntervalMs: 100,
+    });
+  }
+
+  it('returns the live set of session ids', async () => {
+    mockGroupServer({ participantId: 'part-1' });
+    const c = makeClient();
+    await c.start({ sessionIds: ['sess-1', 'sess-2'], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.activeSessionIds.sort()).toEqual(['sess-1', 'sess-2']);
+    c.stop();
+  });
+});
+
+describe('ConsumerAgentClient re-emits', () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    port = (wss.address() as { port: number }).port;
+  });
+  afterEach(() => { wss.close(); });
+
+  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
+    const participantId = opts.participantId ?? 'part-cons-1';
+    wss.on('connection', (sock) => {
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
+      }));
+      sock.on('message', (m) => {
+        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'system.heartbeat') {
+          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+          return;
+        }
+        opts.onMessage?.(msg);
+      });
+    });
+  }
+
+  function makeClient(): ConsumerAgentClient {
+    return new ConsumerAgentClient({
+      apiUrl: `http://localhost:${port}`,
+      wsUrl: `ws://localhost:${port}`,
+      agentToken: 'agt_cons_xxx',
+      agentId: 'agent-1',
+      heartbeatIntervalMs: 100,
+    });
+  }
+
+  it('re-emits session:reconnecting on forceDisconnect', async () => {
+    mockGroupServer({ participantId: 'part-1' });
+    const c = makeClient();
+    const events: string[] = [];
+    c.on('session:reconnecting', (sid: string) => events.push(sid));
+
+    await c.start({ sessionIds: ['sess-1'], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+
+    c.forceDisconnect('sess-1');
+    await new Promise((r) => setTimeout(r, 400)); // reconnect window
+
+    expect(events).toContain('sess-1');
+    c.stop();
+  });
+});
