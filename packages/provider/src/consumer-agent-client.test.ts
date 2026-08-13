@@ -2,46 +2,46 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { ConsumerAgentClient } from './consumer-agent-client.js';
 
-describe('ConsumerAgentClient', () => {
-  let wss: WebSocketServer;
-  let port: number;
+let wss: WebSocketServer;
+let port: number;
 
-  beforeEach(async () => {
-    wss = new WebSocketServer({ port: 0 });
-    port = (wss.address() as { port: number }).port;
+beforeEach(async () => {
+  wss = new WebSocketServer({ port: 0 });
+  port = (wss.address() as { port: number }).port;
+});
+afterEach(() => { wss.close(); });
+
+/** Minimal /ws/group mock: sends system.connected handshake with a participantId,
+ *  acks heartbeats, and optionally captures inbound frames. */
+function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
+  const participantId = opts.participantId ?? 'part-cons-1';
+  wss.on('connection', (sock) => {
+    sock.send(JSON.stringify({
+      type: 'system.connected',
+      payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
+    }));
+    sock.on('message', (m) => {
+      const msg = JSON.parse(m.toString()) as Record<string, unknown>;
+      if (msg['type'] === 'system.heartbeat') {
+        sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+        return;
+      }
+      opts.onMessage?.(msg);
+    });
   });
-  afterEach(() => { wss.close(); });
+}
 
-  /** Minimal /ws/group mock: sends system.connected handshake with a participantId,
-   *  acks heartbeats, and optionally captures inbound frames. */
-  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
-    const participantId = opts.participantId ?? 'part-cons-1';
-    wss.on('connection', (sock) => {
-      sock.send(JSON.stringify({
-        type: 'system.connected',
-        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
-      }));
-      sock.on('message', (m) => {
-        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
-        if (msg['type'] === 'system.heartbeat') {
-          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
-          return;
-        }
-        opts.onMessage?.(msg);
-      });
-    });
-  }
+function makeClient(): ConsumerAgentClient {
+  return new ConsumerAgentClient({
+    apiUrl: `http://localhost:${port}`,
+    wsUrl: `ws://localhost:${port}`,
+    agentToken: 'agt_cons_xxx',
+    agentId: 'agent-1',
+    heartbeatIntervalMs: 100,
+  });
+}
 
-  function makeClient(): ConsumerAgentClient {
-    return new ConsumerAgentClient({
-      apiUrl: `http://localhost:${port}`,
-      wsUrl: `ws://localhost:${port}`,
-      agentToken: 'agt_cons_xxx',
-      agentId: 'agent-1',
-      heartbeatIntervalMs: 100,
-    });
-  }
-
+describe('ConsumerAgentClient', () => {
   it('start connects /ws/group for each sessionId and caches participantId from handshake', async () => {
     mockGroupServer({ participantId: 'part-xyz' });
     const c = makeClient();
@@ -139,43 +139,6 @@ describe('ConsumerAgentClient', () => {
 });
 
 describe('ConsumerAgentClient.addSession', () => {
-  let wss: WebSocketServer;
-  let port: number;
-
-  beforeEach(async () => {
-    wss = new WebSocketServer({ port: 0 });
-    port = (wss.address() as { port: number }).port;
-  });
-  afterEach(() => { wss.close(); });
-
-  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
-    const participantId = opts.participantId ?? 'part-cons-1';
-    wss.on('connection', (sock) => {
-      sock.send(JSON.stringify({
-        type: 'system.connected',
-        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
-      }));
-      sock.on('message', (m) => {
-        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
-        if (msg['type'] === 'system.heartbeat') {
-          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
-          return;
-        }
-        opts.onMessage?.(msg);
-      });
-    });
-  }
-
-  function makeClient(): ConsumerAgentClient {
-    return new ConsumerAgentClient({
-      apiUrl: `http://localhost:${port}`,
-      wsUrl: `ws://localhost:${port}`,
-      agentToken: 'agt_cons_xxx',
-      agentId: 'agent-1',
-      heartbeatIntervalMs: 100,
-    });
-  }
-
   it('connects a new session after start', async () => {
     mockGroupServer({ participantId: 'part-1' });
     const c = makeClient();
@@ -209,43 +172,6 @@ describe('ConsumerAgentClient.addSession', () => {
 });
 
 describe('ConsumerAgentClient.activeSessionIds getter', () => {
-  let wss: WebSocketServer;
-  let port: number;
-
-  beforeEach(async () => {
-    wss = new WebSocketServer({ port: 0 });
-    port = (wss.address() as { port: number }).port;
-  });
-  afterEach(() => { wss.close(); });
-
-  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
-    const participantId = opts.participantId ?? 'part-cons-1';
-    wss.on('connection', (sock) => {
-      sock.send(JSON.stringify({
-        type: 'system.connected',
-        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
-      }));
-      sock.on('message', (m) => {
-        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
-        if (msg['type'] === 'system.heartbeat') {
-          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
-          return;
-        }
-        opts.onMessage?.(msg);
-      });
-    });
-  }
-
-  function makeClient(): ConsumerAgentClient {
-    return new ConsumerAgentClient({
-      apiUrl: `http://localhost:${port}`,
-      wsUrl: `ws://localhost:${port}`,
-      agentToken: 'agt_cons_xxx',
-      agentId: 'agent-1',
-      heartbeatIntervalMs: 100,
-    });
-  }
-
   it('returns the live set of session ids', async () => {
     mockGroupServer({ participantId: 'part-1' });
     const c = makeClient();
@@ -257,43 +183,6 @@ describe('ConsumerAgentClient.activeSessionIds getter', () => {
 });
 
 describe('ConsumerAgentClient re-emits', () => {
-  let wss: WebSocketServer;
-  let port: number;
-
-  beforeEach(async () => {
-    wss = new WebSocketServer({ port: 0 });
-    port = (wss.address() as { port: number }).port;
-  });
-  afterEach(() => { wss.close(); });
-
-  function mockGroupServer(opts: { participantId?: string; onMessage?: (frame: Record<string, unknown>) => void } = {}): void {
-    const participantId = opts.participantId ?? 'part-cons-1';
-    wss.on('connection', (sock) => {
-      sock.send(JSON.stringify({
-        type: 'system.connected',
-        payload: { participant: { participantId, participantType: 'agent', side: 'consumer', agentId: 'agent-1' } },
-      }));
-      sock.on('message', (m) => {
-        const msg = JSON.parse(m.toString()) as Record<string, unknown>;
-        if (msg['type'] === 'system.heartbeat') {
-          sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
-          return;
-        }
-        opts.onMessage?.(msg);
-      });
-    });
-  }
-
-  function makeClient(): ConsumerAgentClient {
-    return new ConsumerAgentClient({
-      apiUrl: `http://localhost:${port}`,
-      wsUrl: `ws://localhost:${port}`,
-      agentToken: 'agt_cons_xxx',
-      agentId: 'agent-1',
-      heartbeatIntervalMs: 100,
-    });
-  }
-
   it('re-emits session:reconnecting on forceDisconnect', async () => {
     mockGroupServer({ participantId: 'part-1' });
     const c = makeClient();
