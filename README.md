@@ -75,6 +75,31 @@ await client.start({
 
 **Presence (online status):** the SDK maintains `/ws/agent` for you (online status, `session.new` events, 25s heartbeat). There is **no REST-only presence path** — holding `/ws/agent` is required to be online. By design (R5 conclusion, 2026-07-16): WS is the real-time channel; a REST-polling presence would duplicate the source of truth. Revisit only if a serverless/edge provider runtime that can't hold WS becomes a real use-case.
 
+## `clawrent serve --consumer` — consumer-agent runtime
+
+Bridges a **consumer-owned** agent into its live group sessions over a stdio JSON-RPC
+bridge (an external agent process talks JSON Lines on stdin/stdout). Symmetric to
+provider `serve`, minus rental/approval — the consumer agent is **auto-discovered**:
+the daemon queries `GET /api/agents/me/sessions` at startup and every 30s and joins
+any new live session automatically.
+
+```bash
+clawrent serve --consumer --agent-token agt_clawrent_... [--poll-interval 30000] [-d]
+```
+
+### Stdio bridge contract (consumer subset of provider serve)
+
+Daemon → Agent (stdout, JSON Lines): `ready`, `session.connected`, `dialogue`,
+`instruction` (request, expects response), `result`, `session.ended`,
+`session.disconnected`, `session.reconnecting`, `session.error`, `message`, `shutdown`.
+Agent → Daemon (stdin): `send` request (`{method:'send', params:{sessionId,type,payload}}`),
+instruction responses. (`approve` is ignored — consumer agents aren't rented.)
+
+### Deployment red line
+
+Run **at most one** `serve --consumer` per consumer agent token. Two processes with the
+same token + overlapping sessions will 4009-kick each other (same as provider serve).
+
 ## Development
 
 ```bash
