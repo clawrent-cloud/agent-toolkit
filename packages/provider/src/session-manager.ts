@@ -355,6 +355,26 @@ export class SessionManager extends EventEmitter {
     this.sessions.delete(sessionId);
   }
 
+  /**
+   * Force-drop one session's WS WITHOUT removing it — used by fault injection
+   * (harness fault-drop) to simulate a network drop. terminate() tears the TCP
+   * socket down (no close frame) → onclose sees 1006 abnormal, which is non-
+   * terminal → handleGroupClose reconnects. The session is kept (cursor +
+   * bookkeeping preserved across the reconnect), unlike disconnect().
+   */
+  forceDisconnect(sessionId: string): void {
+    const conn = this.sessions.get(sessionId);
+    if (!conn) return;
+    try { conn.ws.terminate(); } catch { /* already closing */ }
+  }
+
+  /** Force-drop ALL active sessions (fault injection). Each reconnects. */
+  forceDisconnectAll(): void {
+    for (const sid of Array.from(this.sessions.keys())) {
+      this.forceDisconnect(sid);
+    }
+  }
+
   /** Disconnect all sessions */
   disconnectAll(): void {
     for (const sessionId of this.sessions.keys()) {

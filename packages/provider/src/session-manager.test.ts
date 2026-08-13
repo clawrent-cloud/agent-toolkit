@@ -271,6 +271,37 @@ describe('SessionManager /ws/group mode', () => {
     // (not the 1s exponential backoff) is what stops retry → 4030 → retry storms.
     expect(reconnecting).toHaveBeenCalledWith('sess-g1', 5000);
   });
+
+  it('forceDisconnect closes the WS and auto-reconnects (fault-drop simulation)', async () => {
+    const seenConnections: WebSocket[] = [];
+    wss.on('connection', (sock) => {
+      seenConnections.push(sock);
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId: 'p1', participantType: 'agent', side: 'provider', agentId: 'a1' } },
+      }));
+      sock.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (msg['type'] === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+        } catch { /* ignore */ }
+      });
+    });
+
+    const reconnecting = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    await waitFor(sm, 'session:participant');
+    expect(seenConnections.length).toBe(1);
+
+    sm.forceDisconnect('sess-g1'); // simulate a network drop
+
+    await waitFor(sm, 'session:reconnecting');
+    await waitFor(sm, 'session:connected', 3_000); // reconnect delay (1s) + handshake
+    expect(reconnecting).toHaveBeenCalled();
+    expect(seenConnections.length).toBe(2); // initial + reconnect
+  });
 });
 
 describe('SessionManager /ws/session mode (backward compatibility)', () => {

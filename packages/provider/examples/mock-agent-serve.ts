@@ -61,6 +61,8 @@ interface MockAgentConfig {
   replyText?: string;
   /** Simulated reply latency in ms (fault-injection hook). */
   replyDelayMs?: number;
+  /** Fault injection: 'drop' = periodically forceDisconnectAll (test reconnect). */
+  fault?: 'drop';
   /** Log tag. Defaults to `${side}#${index}(<masked token>)`. */
   tag?: string;
 }
@@ -148,6 +150,7 @@ function loadOptions(): GlobalOptions {
       sessionIds: sessionIdsRaw ? sessionIdsRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined,
       replyText: args['reply'] ?? process.env.MOCK_REPLY,
       replyDelayMs: delayRaw ? Number(delayRaw) : undefined,
+      fault: process.env.MOCK_FAULT === 'drop' ? 'drop' : undefined,
     }],
   };
 }
@@ -294,7 +297,14 @@ async function main(): Promise<void> {
     const side = cfg.side ?? 'provider';
     const sessionsInfo = side === 'consumer' ? ` sessions=${cfg.sessionIds?.length ?? 0}` : '';
     console.log(`starting #${i}: side=${side}${sessionsInfo} replyDelay=${cfg.replyDelayMs ?? 0}ms reply=${cfg.replyText ? 'fixed' : 'echo'}`);
-    clients.push(await createMockAgent(cfg, i, apiUrl, wsUrl));
+    const client = await createMockAgent(cfg, i, apiUrl, wsUrl);
+    clients.push(client);
+    if (cfg.fault === 'drop') {
+      console.log(`  #${i}: fault=drop — forceDisconnectAll every 4s (reconnect test)`);
+      setInterval(() => {
+        try { client.forceDisconnectAll(); } catch (e) { console.log(`  [mock#${i}] forceDisconnectAll error: ${String(e)}`); }
+      }, 8_000);
+    }
   }
 
   console.log(`\nall ${clients.length} agent(s) serving.`);

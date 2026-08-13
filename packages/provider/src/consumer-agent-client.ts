@@ -176,6 +176,17 @@ export class ConsumerAgentClient extends EventEmitter {
     return { via: 'ws', delivered: ok };
   }
 
+  /** Force-drop one session's WS (network-drop simulation, fault injection).
+   *  SessionManager auto-reconnects; session/cursor state preserved. */
+  forceDisconnect(sessionId: string): void {
+    this.sessionManager?.forceDisconnect(sessionId);
+  }
+
+  /** Force-drop ALL active sessions at once (fault injection). Each reconnects. */
+  forceDisconnectAll(): void {
+    this.sessionManager?.forceDisconnectAll();
+  }
+
   stop(): void {
     this._running = false;
     this.sessionManager?.disconnectAll();
