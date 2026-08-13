@@ -181,6 +181,14 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
         void consumer.send(sid, {
           type: result.type ?? 'result.success',
           payload: result.payload ?? result,
+        }).catch((err: unknown) => {
+          // Closed stdout during shutdown would otherwise become an unhandled
+          // rejection and crash a long-running daemon. Route to session.error so
+          // the host still learns the response did not land.
+          bridge.writeNotification('session.error', {
+            sessionId: sid,
+            message: err instanceof Error ? err.message : String(err),
+          });
         });
       }
     } else if (isRequest(msg) && msg.method === 'send') {
@@ -192,7 +200,8 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
             type: (p['type'] as string) ?? 'dialogue.message',
             payload: (p['payload'] as Record<string, unknown>) ?? { content: '' },
           })
-          .then((r) => bridge.writeResponse(msg.id, { success: r.delivered }));
+          .then((r) => bridge.writeResponse(msg.id, { success: r.delivered }))
+          .catch(() => { /* shutdown race: stdout closed during stop — response failure is non-critical */ });
       }
     }
     // notifications + unknown requests ignored

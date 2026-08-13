@@ -212,6 +212,30 @@ describe('SessionManager /ws/group mode', () => {
     expect(sm.activeCount).toBe(0);
   });
 
+  it('session-ended close 4004 (backend closeParticipantSessionClients) is terminal — no spurious reconnect', async () => {
+    // Backend closes all /ws/group participants with 4004 on session-end
+    // (sessions.routes session-end → 'Session ended') and admin-terminate
+    // (admin.routes → 'Session terminated'). Reconnecting a dead session would
+    // just get rejected (4015) → session:dead anyway; treating 4004 as terminal
+    // avoids the spurious session:reconnecting cycle per session end.
+    const seenConnections: WebSocket[] = [];
+    wss.on('connection', s => seenConnections.push(s));
+    mockGroupServer(wss, { terminalCode: 4004 });
+
+    const reconnecting = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    const [sid, reason] = await waitFor<string>(sm, 'session:dead');
+
+    expect(sid).toBe('sess-g1');
+    expect(String(reason)).toContain('4004');
+    await new Promise(r => setTimeout(r, 80)); // give a would-be reconnect time to (not) fire
+    expect(reconnecting).not.toHaveBeenCalled();
+    expect(seenConnections.length).toBe(1); // no second connection
+    expect(sm.activeCount).toBe(0);
+  });
+
   it('routes presence/ack frames to session:presence, NOT session:message', async () => {
     mockGroupServer(wss, {
       extraFrames: [

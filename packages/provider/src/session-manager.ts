@@ -12,10 +12,16 @@ const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004]);
  *  4000 missing query params, 4011 invalid/expired JWT, 4012 invalid agent token,
  *  4013 no active participant for this identity, 4014 session not found,
  *  4015 session not active, 4021 participant ended (terminal).
+ *  4004 is a /ws/session code that the backend ALSO broadcasts to every /ws/group
+ *  participant via closeParticipantSessionClients on session-end
+ *  (sessions.routes 'Session ended') and admin-terminate (admin.routes
+ *  'Session terminated') — both flip the session to status='completed', so
+ *  reconnecting would just earn a 4015. Treating it as terminal avoids a
+ *  spurious session:reconnecting cycle per session end.
  *  4009 (replaced by a newer connection) is NOT terminal — normal reconnect signal.
  *  4020 (paused) is NOT terminal either but is handled separately (no reconnect —
  *  the host re-connects on `session.participant_resumed`). */
-const GROUP_TERMINAL_CLOSE_CODES = new Set([4000, 4011, 4012, 4013, 4014, 4015, 4021]);
+const GROUP_TERMINAL_CLOSE_CODES = new Set([4000, 4004, 4011, 4012, 4013, 4014, 4015, 4021]);
 
 /** /ws/group close code: participant paused by the consumer (Phase 1). The server
  *  sets the participant row to status='paused', so reconnect attempts return 4013
