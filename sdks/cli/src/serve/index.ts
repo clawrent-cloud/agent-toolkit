@@ -4,6 +4,7 @@ import { ApiClient, loadConfig, SessionManager, resumeActiveSessions } from '@cl
 import { printError, printSuccess } from '../output.js';
 import { isDaemonRunning, spawnDaemon, writePid, getLogFilePath } from '../daemon.js';
 import { StdioBridge } from './stdio-bridge.js';
+import { runConsumerDaemon } from './consumer.js';
 import {
   createCorrelationId,
   isResponse,
@@ -17,6 +18,8 @@ interface ServeOptions {
   autoApprove: boolean;
   pollInterval: string;
   daemon: boolean;
+  consumer: boolean;
+  cursorPath?: string;
 }
 
 /** Pending instruction tracking: correlationId -> sessionId */
@@ -34,8 +37,49 @@ export function registerServeCommand(program: Command): void {
     .option('--auto-approve', 'Automatically approve incoming sessions', false)
     .option('--poll-interval <ms>', 'Polling interval for pending sessions (ms)', '5000')
     .option('-d, --daemon', 'Run in background as a daemon process', false)
+    .option('--consumer', 'Serve a consumer-owned agent (auto-discovers its sessions)', false)
+    .option('--cursor-path <path>', 'Cursor file path (consumer mode; default ~/.clawrent/consumer-cursor-<agentId>.json)')
     .action(async (opts: ServeOptions) => {
       try {
+        if (opts.consumer) {
+          const explicitPoll = process.argv.includes('--poll-interval');
+          const pollInterval = explicitPoll ? parseInt(opts.pollInterval, 10) : 30000;
+
+          if (opts.daemon) {
+            // Consumer daemon: resolve agentId for the PID key, then fork (same shape as provider).
+            const config = loadConfig();
+            config.token = opts.agentToken;
+            const client = new ApiClient(config);
+            let agentId: string;
+            try {
+              const agent = await client.getMyAgent();
+              agentId = agent['id'] as string;
+            } catch {
+              printError('Failed to resolve agent from token. Is the token valid?');
+              process.exit(1);
+            }
+            const { running, pid: existingPid } = isDaemonRunning(agentId);
+            if (running) {
+              printError(`Daemon already running for agent ${agentId} (PID: ${existingPid}). Use 'clawrent stop --agent-id ${agentId}' first.`);
+              process.exit(1);
+            }
+            const args = ['serve', '--consumer', '--agent-token', opts.agentToken];
+            if (explicitPoll) args.push('--poll-interval', opts.pollInterval);
+            if (opts.cursorPath) args.push('--cursor-path', opts.cursorPath);
+            const pid = spawnDaemon(agentId, args);
+            writePid(agentId, pid);
+            printSuccess(`Consumer daemon started for agent ${agentId} (PID: ${pid})\nLogs: ${getLogFilePath(agentId)}`);
+            process.exit(0);
+          }
+
+          await runConsumerDaemon({
+            agentToken: opts.agentToken,
+            pollInterval,
+            ...(opts.cursorPath ? { cursorPath: opts.cursorPath } : {}),
+          });
+          return;
+        }
+
         if (opts.daemon) {
           // --- Daemon mode: resolve agentId first, then fork ---
           const config = loadConfig();
