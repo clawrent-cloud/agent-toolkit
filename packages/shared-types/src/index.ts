@@ -8,3 +8,4 @@ export type { Session, SessionSlot, SessionStatus, SessionType, SessionCheckpoin
 export type { Review, ReviewerType } from './review.js';
 export type { PricingConfig, PricingModel, BillingRecord, BillingStatus, WalletTransaction, TransactionType } from './billing.js';
 export type { PaginationParams, PaginatedResponse, SortOrder } from './common.js';
+export type { ServeRule, SessionCtx, AgentSessionSummary, AgentSessionsResponse } from './serve.js';

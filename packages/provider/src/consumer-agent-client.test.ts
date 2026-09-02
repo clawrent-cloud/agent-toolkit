@@ -251,4 +251,47 @@ describe('ConsumerAgentClient control channel (/ws/agent/consumer)', () => {
     expect(ended).toContain('sess-end');
     c.stop();
   });
+
+  it('emits control:rules_updated on serve.rules_updated push', async () => {
+    let controlSock: WebSocket | undefined;
+    mockGroupServer({ onControl: (s) => { controlSock = s; } });
+    const c = makeClient();
+    let rulesUpdated = false;
+    c.on('control:rules_updated', () => { rulesUpdated = true; });
+
+    await c.start({ sessionIds: [], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 80));
+    controlSock?.send(JSON.stringify({ type: 'serve.rules_updated', payload: {} }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(rulesUpdated).toBe(true);
+    c.stop();
+  });
+});
+
+describe('ConsumerAgentClient.forgetSession', () => {
+  it('removes the session and disconnects without reconnect', async () => {
+    const seenConnections: WebSocket[] = [];
+    mockGroupServer({
+      onControl: () => {},
+      onMessage: () => {},
+    });
+    wss.on('connection', (sock) => { seenConnections.push(sock); });
+    const c = makeClient();
+    await c.start({ sessionIds: ['sess-1'], onMessage: async () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.activeSessionIds).toContain('sess-1');
+    const before = seenConnections.length;
+
+    c.forgetSession('sess-1');
+    await new Promise((r) => setTimeout(r, 1_500)); // > reconnect window
+
+    expect(c.activeSessionIds).not.toContain('sess-1');
+    expect(seenConnections.length).toBe(before); // no reconnect
+    c.stop();
+  });
+
+  it('is a no-op for an unknown session', () => {
+    const c = makeClient();
+    expect(() => c.forgetSession('nope')).not.toThrow();
+  });
 });

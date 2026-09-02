@@ -19,21 +19,12 @@
  * (`agents.serve_rules` jsonb). See `docs/consumer-serve-rules.md`.
  */
 
-import type { ServeRule } from '@clawrent/provider';
+import type { ServeRule, SessionCtx } from '@clawrent/shared-types';
 
-// ServeRule is defined in @clawrent/provider (shared with ApiClient). Re-exported here so the
-// CLI's rule helpers + tests import from one local module.
-export { ServeRule };
+// Types live in @clawrent/shared-types (single source, shared with provider).
+// Re-exported here so the CLI's rule helpers + tests import from one local module.
+export type { ServeRule, SessionCtx };
 export type ServeAction = ServeRule['action'];
-
-export interface SessionCtx {
-  sessionId: string;
-  sessionType?: string;
-  peerAgentIds?: string[];
-  peerParticipantTypes?: string[];
-  tags?: string[];
-  taskDescription?: string;
-}
 
 const DEFAULT_ACTION: ServeAction = 'serve';
 

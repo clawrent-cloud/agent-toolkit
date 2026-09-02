@@ -54,6 +54,9 @@ export interface SessionConnection {
  */
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, SessionConnection>();
+  /** Pending reconnect timers by sessionId — tracked so forget() can cancel a
+   *  scheduled reconnect (the raw setTimeouts used to be un-cancellable). */
+  private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private wsUrl: string;
   private heartbeatInterval: number;
   private maxReconnectDelay: number;
@@ -142,7 +145,7 @@ export class SessionManager extends EventEmitter {
 
         this.emit('session:reconnecting', sessionId, delay);
 
-        setTimeout(() => {
+        this.scheduleReconnect(sessionId, () => {
           this.sessions.delete(sessionId);
           this.connect(sessionId, sessionToken);
         }, delay);
@@ -273,7 +276,7 @@ export class SessionManager extends EventEmitter {
         ? retryAfterSec * 1000
         : Math.min(1000 * Math.pow(2, conn.reconnectAttempts), this.maxReconnectDelay);
       this.emit('session:reconnecting', sessionId, delay);
-      setTimeout(() => {
+      this.scheduleReconnect(sessionId, () => {
         this.sessions.delete(sessionId);
         this.connectGroup(sessionId, agentToken);
       }, delay);
@@ -302,7 +305,7 @@ export class SessionManager extends EventEmitter {
 
       this.emit('session:reconnecting', sessionId, delay);
 
-      setTimeout(() => {
+      this.scheduleReconnect(sessionId, () => {
         this.sessions.delete(sessionId);
         this.connectGroup(sessionId, agentToken);
       }, delay);
@@ -381,6 +384,21 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * Disconnect a session AND cancel any pending auto-reconnect — the deliberate
+   * opposite of forceDisconnect (which simulates a fault and lets SM reconnect).
+   * Used by the consumer serve daemon's runtime `removeSession` override. The
+   * session can be re-connected later via connectGroup/connect (not permanent).
+   */
+  forget(sessionId: string): void {
+    const timer = this.reconnectTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.reconnectTimers.delete(sessionId);
+    }
+    this.disconnect(sessionId);
+  }
+
   /** Disconnect all sessions */
   disconnectAll(): void {
     for (const sessionId of this.sessions.keys()) {
@@ -404,5 +422,13 @@ export class SessionManager extends EventEmitter {
       clearInterval(conn.heartbeatTimer);
       conn.heartbeatTimer = null;
     }
+  }
+
+  /** Schedule a reconnect for a session, tracking the timer so forget() can cancel it. */
+  private scheduleReconnect(sessionId: string, fn: () => void, delay: number): void {
+    this.reconnectTimers.set(sessionId, setTimeout(() => {
+      this.reconnectTimers.delete(sessionId);
+      fn();
+    }, delay));
   }
 }

@@ -1,4 +1,9 @@
 import type { GuardrailDecision } from '@clawrent/protocol';
+import type { ServeRule } from '@clawrent/shared-types';
+
+// ServeRule is defined in @clawrent/shared-types (shared with the CLI); re-exported
+// here so provider consumers keep importing from '@clawrent/provider'.
+export type { ServeRule };
 
 export interface ActiveSession {
   sessionId: string;
@@ -16,12 +21,6 @@ export interface ActiveSession {
   peerAgentIds?: string[];
   peerParticipantTypes?: string[];
   tags?: string[];
-}
-
-/** Phase 3: consumer serve rule — one clause of an agent's ordered serveRules set. */
-export interface ServeRule {
-  match: Record<string, unknown>;
-  action: 'serve' | 'skip';
 }
 
 export interface SessionSummary {

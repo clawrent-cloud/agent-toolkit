@@ -212,6 +212,79 @@ describe('SessionManager /ws/group mode', () => {
     expect(sm.activeCount).toBe(0);
   });
 
+  it('forget disconnects cleanly without reconnect (opposite of forceDisconnect)', async () => {
+    const seenConnections: WebSocket[] = [];
+    wss.on('connection', (sock) => {
+      seenConnections.push(sock);
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId: 'p1', participantType: 'agent', side: 'consumer', agentId: 'a1' } },
+      }));
+      sock.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (msg['type'] === 'system.heartbeat') sock.send(JSON.stringify({ type: 'system.heartbeat_ack' }));
+        } catch { /* ignore */ }
+      });
+    });
+    const reconnecting = vi.fn();
+    sm.on('session:reconnecting', reconnecting);
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    await waitFor(sm, 'session:participant');
+    expect(seenConnections.length).toBe(1);
+
+    sm.forget('sess-g1');
+
+    await new Promise(r => setTimeout(r, 1_500)); // > reconnect delay window
+    expect(reconnecting).not.toHaveBeenCalled();
+    expect(seenConnections.length).toBe(1); // no second connection
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it('forget cancels a pending reconnect scheduled by forceDisconnect', async () => {
+    const seenConnections: WebSocket[] = [];
+    wss.on('connection', (sock) => {
+      seenConnections.push(sock);
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId: 'p1', participantType: 'agent', side: 'consumer', agentId: 'a1' } },
+      }));
+    });
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    await waitFor(sm, 'session:participant');
+    expect(seenConnections.length).toBe(1);
+
+    sm.forceDisconnect('sess-g1'); // schedules a reconnect (~1s delay)
+    await waitFor(sm, 'session:reconnecting');
+    sm.forget('sess-g1'); // must cancel the pending reconnect
+
+    await new Promise(r => setTimeout(r, 1_800)); // > reconnect delay + margin
+    expect(seenConnections.length).toBe(1); // reconnect never fired
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it('forget then connectGroup re-connects fresh (forget is not permanent)', async () => {
+    let connections = 0;
+    wss.on('connection', (sock) => {
+      connections++;
+      sock.send(JSON.stringify({
+        type: 'system.connected',
+        payload: { participant: { participantId: 'p1', participantType: 'agent', side: 'consumer', agentId: 'a1' } },
+      }));
+    });
+
+    sm.connectGroup('sess-g1', 'agt_test');
+    await waitFor(sm, 'session:participant');
+    sm.forget('sess-g1');
+    await new Promise(r => setTimeout(r, 100));
+
+    sm.connectGroup('sess-g1', 'agt_test'); // re-add after forget
+    await waitFor(sm, 'session:connected', 3_000);
+    expect(connections).toBe(2);
+  });
+
   it('session-ended close 4004 (backend closeParticipantSessionClients) is terminal — no spurious reconnect', async () => {
     // Backend closes all /ws/group participants with 4004 on session-end
     // (sessions.routes session-end → 'Session ended') and admin-terminate

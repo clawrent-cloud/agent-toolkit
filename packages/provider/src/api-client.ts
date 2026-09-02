@@ -1,5 +1,5 @@
 import type { ClawRentConfig } from './config.js';
-import type { ServeRule } from './types.js';
+import type { ServeRule, AgentSessionsResponse } from '@clawrent/shared-types';
 
 export class ApiClient {
   private config: ClawRentConfig;
@@ -162,17 +162,7 @@ export class ApiClient {
   }
 
   /** Sessions where the agentToken's agent is an active participant (consumer serve discovery). */
-  async getMyAgentSessions(): Promise<{
-    sessions: {
-      sessionId: string;
-      status: string;
-      taskDescription?: string;
-      sessionType?: string;
-      tags?: string[];
-      peerAgentIds?: string[];
-      peerParticipantTypes?: string[];
-    }[];
-  }> {
+  async getMyAgentSessions(): Promise<AgentSessionsResponse> {
     return this.request('GET', '/api/agents/me/sessions');
   }
 

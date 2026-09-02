@@ -1,4 +1,4 @@
-export const PROVIDER_PACKAGE_VERSION = '0.6.0';
+export const PROVIDER_PACKAGE_VERSION = '0.7.0';
 
 export { ApiClient } from './api-client.js';
 export type { ClawRentConfig } from './config.js';

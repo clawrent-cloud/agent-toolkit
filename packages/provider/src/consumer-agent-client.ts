@@ -118,6 +118,14 @@ export class ConsumerAgentClient extends EventEmitter {
     this.sessionManager.connectGroup(sessionId, this.agentToken);
   }
 
+  /** Deliberately drop a session: disconnect AND cancel any pending reconnect
+   *  (runtime `removeSession` override — the opposite of addSession). The
+   *  session can be re-added later via addSession. No-op if unknown. */
+  forgetSession(sessionId: string): void {
+    this.activeSessions.delete(sessionId);
+    this.sessionManager?.forget(sessionId);
+  }
+
   private bindSessionManager(): void {
     const sm = this.sessionManager;
     if (!sm) return;
@@ -252,6 +260,10 @@ export class ConsumerAgentClient extends EventEmitter {
         this.emit('control:session.new', (msg['payload'] ?? {}) as Record<string, unknown>);
       } else if (type === 'session.ended') {
         this.emit('control:session.ended', (msg['payload'] ?? {}) as Record<string, unknown>);
+      } else if (type === 'serve.rules_updated') {
+        // Serve rules were re-PUT via /api/agents/me/serve-rules — the daemon
+        // should re-fetch and re-evaluate its skip decisions.
+        this.emit('control:rules_updated');
       }
       // agent.connected welcome / heartbeat_ack / others: ignored
     });

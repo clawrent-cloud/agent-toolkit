@@ -6,9 +6,11 @@ behavior). **Serve rules** let the consumer selectively serve or skip sessions b
 their attributes — e.g. block a specific provider agent, or only serve VIP-tagged sessions.
 
 > Phase 3 of the consumer serve runtime. The daemon loads rules at startup from
-> `GET /api/agents/me/serve-rules` (the agent's `serve_rules` column). Rule **changes take
-> effect on the next daemon restart** (runtime overrides below are immediate). Rules are
-> evaluated client-side by the daemon — the platform never enforces them.
+> `GET /api/agents/me/serve-rules` (the agent's `serve_rules` column). Rule changes apply
+> **without a restart**: `PUT /api/agents/me/serve-rules` pushes `serve.rules_updated` on the
+> control channel for instant reload, and the daemon's poll tick re-fetches rules as a
+> fallback (≤ 30s). Rules are evaluated client-side by the daemon — the platform never
+> enforces them.
 
 ## Rule model
 
@@ -103,8 +105,18 @@ The daemon accepts runtime overrides over its stdin bridge. These take **priorit
 rules** and are cleared on restart (not persisted):
 
 - `addSession { sessionId }` — force **serve** a session (even if a rule would skip it).
-- `removeSession { sessionId }` — force **skip** a session (even if a rule would serve it).
+- `removeSession { sessionId }` — force **skip** a session: disconnects immediately AND
+  cancels the auto-reconnect (no reconnect fight). Re-addable via `addSession`.
 - `listSessions` — returns `{ discovered[], joined[], skipped[] }`.
+
+## Rule changes without restart
+
+When rules are re-PUT, a running daemon reloads them (push on the control channel is
+instant; the poll tick is the ≤30s fallback) and re-evaluates:
+
+- A previously **skipped** session that now evaluates to `serve` is joined (upgraded).
+- An already-**joined** session is never kicked by a rules change — use the
+  `removeSession` override to leave a live session.
 
 ## Examples
 

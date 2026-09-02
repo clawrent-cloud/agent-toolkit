@@ -10,6 +10,7 @@ import {
 import { join } from 'node:path';
 import { printError } from '../output.js';
 import { evaluateServeRules, type ServeRule, type SessionCtx } from './serve-rules.js';
+import type { AgentSessionSummary } from '@clawrent/shared-types';
 
 /** Description of what the daemon should emit on stdout for one inbound WS frame.
  *  `instruction` carries no corrId — the caller generates it (it must track pending
@@ -153,13 +154,13 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
   // Discovered session contexts (full objects for rule evaluation).
   const discoveredCtx = new Map<string, SessionCtx>();
 
-  const toCtx = (s: Record<string, unknown>): SessionCtx => ({
-    sessionId: String(s['sessionId'] ?? ''),
-    sessionType: s['sessionType'] as string | undefined,
-    peerAgentIds: s['peerAgentIds'] as string[] | undefined,
-    peerParticipantTypes: s['peerParticipantTypes'] as string[] | undefined,
-    tags: s['tags'] as string[] | undefined,
-    taskDescription: s['taskDescription'] as string | undefined,
+  const toCtx = (s: AgentSessionSummary): SessionCtx => ({
+    sessionId: s.sessionId,
+    sessionType: s.sessionType,
+    peerAgentIds: s.peerAgentIds,
+    peerParticipantTypes: s.peerParticipantTypes,
+    tags: s.tags,
+    taskDescription: s.taskDescription,
   });
 
   const decide = (ctx: SessionCtx): 'serve' | 'skip' => {
@@ -169,13 +170,13 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
   };
 
   // 2. discovery (full session objects, not just ids — rules need the context)
-  const discover = async (): Promise<Record<string, unknown>[]> => {
+  const discover = async (): Promise<AgentSessionSummary[]> => {
     const res = await client.getMyAgentSessions();
     return res.sessions ?? [];
   };
 
   // Decide serve/skip for a discovered session and act on it. Idempotent (skips already-known).
-  const applyDecision = (session: Record<string, unknown>): void => {
+  const applyDecision = (session: AgentSessionSummary): void => {
     const ctx = toCtx(session);
     const sid = ctx.sessionId;
     if (!sid || discoveredCtx.has(sid)) return;
@@ -184,6 +185,25 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
       consumer.addSession(sid);
     } else {
       bridge.writeNotification('session.skipped', { sessionId: sid, reason: 'rule' });
+    }
+  };
+
+  // Re-fetch serve rules (runtime reload: poll tick + control:rules_updated push).
+  const refreshRules = async (): Promise<void> => {
+    try {
+      serveRules = (await client.getServeRules()).rules;
+    } catch {
+      // transient fetch failure — keep the previously loaded rules
+    }
+  };
+
+  // After a rules change: upgrade previously-skipped sessions that now evaluate to
+  // 'serve'. Joined sessions are never kicked (use the removeSession override for that).
+  const reevaluateSkipped = (): void => {
+    const joined = new Set(consumer.activeSessionIds);
+    for (const ctx of discoveredCtx.values()) {
+      if (joined.has(ctx.sessionId)) continue;
+      if (decide(ctx) === 'serve') consumer.addSession(ctx.sessionId);
     }
   };
 
@@ -250,6 +270,12 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
   consumer.on('control:disconnected', () =>
     bridge.writeNotification('control.disconnected', { reason: 'push channel down; poll fallback active' }),
   );
+  consumer.on('control:rules_updated', () => {
+    bridge.writeNotification('serve.rules_updated', {});
+    void refreshRules()
+      .then(() => reevaluateSkipped())
+      .catch(() => { /* transient; next poll tick retries */ });
+  });
 
   // 5. outbound: stdin JSON-RPC -> WS (send / instruction-response / runtime control). No `approve`.
   bridge.start((msg: JsonRpcMessage) => {
@@ -294,11 +320,11 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
         }
         bridge.writeResponse(msg.id, { ok: true, sessionId: sid });
       } else if (msg.method === 'removeSession') {
-        // Runtime override: force-skip. Best-effort: the /ws/group socket is force-closed; the
-        // override prevents re-join on the next discover/push cycle (SM reconnect is group-level).
+        // Runtime override: force-skip. forgetSession disconnects AND cancels SM's
+        // auto-reconnect; the skip override prevents re-join on discover/push cycles.
         if (sid) {
           overrides.set(sid, 'skip');
-          consumer.forceDisconnect(sid);
+          consumer.forgetSession(sid);
         }
         bridge.writeResponse(msg.id, { ok: true, sessionId: sid });
       } else if (msg.method === 'listSessions') {
@@ -325,7 +351,7 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
 
   const initial = await discover().catch((e) => {
     printError(`Initial discovery failed: ${e instanceof Error ? e.message : String(e)}`);
-    return [] as Record<string, unknown>[];
+    return [] as AgentSessionSummary[];
   });
   initial.forEach(applyDecision);
   bridge.writeNotification('ready', {
@@ -335,9 +361,10 @@ export async function runConsumerDaemon(opts: ConsumerDaemonOptions): Promise<vo
     sessionCount: consumer.activeSessionIds.length,
   });
 
-  // 7. poll loop (fallback when control channel is down + rule re-eval for new sessions)
+  // 7. poll loop (fallback when control channel is down + rules refresh + rule re-eval)
   const pollTimer = setInterval(async () => {
     try {
+      await refreshRules();
       const sessions = await discover();
       sessions.forEach(applyDecision);
     } catch {
