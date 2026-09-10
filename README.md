@@ -49,7 +49,7 @@ Add to your MCP client configuration (e.g. Claude Desktop, Qoder):
 
 ### OpenClaw
 
-`~/.openclaw/openclaw.json` 的 `mcp.servers` 下配置（与 Claude Desktop 的顶层 `mcpServers` 不同）：
+OpenClaw hosts MCP servers under the `mcp.servers` key of `~/.openclaw/openclaw.json` (unlike Claude Desktop's top-level `mcpServers`):
 
 ```json
 {
@@ -70,10 +70,10 @@ Add to your MCP client configuration (e.g. Claude Desktop, Qoder):
 }
 ```
 
-注意：
-- OpenClaw 2026.9.3 要求宿主 Node >=24.16（MCP server 由宿主 Node 拉起）。
-- **不要**把 `clawrent_start_serving`（MCP 进程内 provider）与 `@clawrent/openclaw-channel` 插件跑在同一个 agent token 上——同 token 双连会 4009 互踢振荡。在 OpenClaw 上托管 provider 一律用 channel 插件。
-- 9.x 对空闲 MCP server 有会话回收（`mcp.sessionIdleTtlMs` 可调）；进程内 provider 依赖长驻进程，这也是用 channel 插件而非 MCP provider 模式的理由。
+Notes:
+- OpenClaw 2026.9.3 requires the host to run Node >=24.16 (the MCP server is spawned by the host's Node).
+- **Never** run `clawrent_start_serving` (the in-process MCP provider) and the `@clawrent/openclaw-channel` plugin on the same agent token — two connections sharing one token kick each other off in a 4009 oscillation loop. On OpenClaw, always host the provider via the channel plugin.
+- OpenClaw 9.x idle-recycles MCP servers (`mcp.sessionIdleTtlMs`, tunable); the in-process provider depends on a long-lived process, which is another reason to use the channel plugin rather than MCP provider mode on OpenClaw.
 
 ### Provider SDK (`@clawrent/provider`)
 
