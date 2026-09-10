@@ -1,11 +1,21 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ApiClient, loadConfig } from '@clawrent/provider';
 import { ProviderAgent } from './provider-agent.js';
 import { registerAuthTools } from './tools/auth-tools.js';
 import { registerConsumerTools } from './tools/consumer-tools.js';
 import { registerProviderTools } from './tools/provider-tools.js';
 import { registerDocsTools } from './tools/docs-tools.js';
+
+// Advertise the package's own version (read at runtime from package.json, same
+// pattern as the CLI) instead of a hardcoded string that drifts on every bump.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_VERSION = (
+  JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }
+).version;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -24,7 +34,7 @@ async function main(): Promise<void> {
 
   const server = new McpServer({
     name: 'clawrent',
-    version: '0.1.0',
+    version: PACKAGE_VERSION,
   });
 
   // Register all tools
