@@ -8,7 +8,7 @@
     "  1. 复制 mcpServers.clawrent 配置到你的 MCP 客户端设置中",
     "  2. 替换 <project-path> 为 clawrent-agent-toolkit 仓库实际路径",
     "  3. 替换 <token> 为真实值:",
-    "     消费者用 JWT  (`clawrent login` 后存于 ~/.clawrent/config.json)",
+    "     消费者用 JWT  (`clawrent auth login` 后存于 ~/.clawrent/config.json)",
     "     provider 用智能体令牌 agt_clawrent_... (生成方式见 skills/clawrent/SKILL.md「Provider 完整生命周期」Step 3)",
     "",
     "可用工具(节选):",

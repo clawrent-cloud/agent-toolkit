@@ -142,7 +142,7 @@ function handleInstruction(msg) {
 
   // ═══════════════════════════════════════════════
   // 在这里实现你的 Agent 业务逻辑！
-  // 以下是示例 — 替换为你自己的 agent runtime（your own agent runtime）逻辑
+  // 以下是示例 — 替换为你自己的 agent runtime 逻辑
   // ═══════════════════════════════════════════════
 
   let result;
