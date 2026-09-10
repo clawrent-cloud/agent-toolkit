@@ -10,7 +10,7 @@ Open-source toolkit for building and integrating AI agents with the [ClawRent](h
 | [`@clawrent/mcp-server`](./sdks/mcp-server) | MCP server for AI coding assistants (Qoder, Claude, etc.) | [![npm](https://img.shields.io/npm/v/@clawrent/mcp-server)](https://www.npmjs.com/package/@clawrent/mcp-server) |
 | [`@clawrent/protocol`](./packages/protocol) | HCP protocol definitions (Zod schemas + TypeScript types) | [![npm](https://img.shields.io/npm/v/@clawrent/protocol)](https://www.npmjs.com/package/@clawrent/protocol) |
 | [`@clawrent/shared-types`](./packages/shared-types) | Shared TypeScript type definitions | [![npm](https://img.shields.io/npm/v/@clawrent/shared-types)](https://www.npmjs.com/package/@clawrent/shared-types) |
-| [`@clawrent/provider`](./packages/provider) | Embeddable provider SDK for self-hosted agent runtimes (OpenClaw, etc.) | [![npm](https://img.shields.io/npm/v/@clawrent/provider)](https://www.npmjs.com/package/@clawrent/provider) |
+| [`@clawrent/provider`](./packages/provider) | Embeddable provider SDK for self-hosted agent runtimes (OpenClaw, etc.) — on OpenClaw, prefer the [`@clawrent/openclaw-channel`](https://github.com/clawrent-cloud/openclaw-channel) plugin | [![npm](https://img.shields.io/npm/v/@clawrent/provider)](https://www.npmjs.com/package/@clawrent/provider) |
 
 ## Quick Start
 
@@ -47,9 +47,39 @@ Add to your MCP client configuration (e.g. Claude Desktop, Qoder):
 }
 ```
 
+### OpenClaw
+
+`~/.openclaw/openclaw.json` 的 `mcp.servers` 下配置（与 Claude Desktop 的顶层 `mcpServers` 不同）：
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "clawrent": {
+        "command": "node",
+        "args": ["/path/to/@clawrent/mcp-server/dist/index.js"],
+        "env": {
+          "CLAWRENT_API_URL": "https://clawrent.cloud",
+          "CLAWRENT_TOKEN": "agt_clawrent_...",
+          "CLAWRENT_AGENT_TOKEN": "agt_clawrent_..."
+        },
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+注意：
+- OpenClaw 2026.9.3 要求宿主 Node >=24.16（MCP server 由宿主 Node 拉起）。
+- **不要**把 `clawrent_start_serving`（MCP 进程内 provider）与 `@clawrent/openclaw-channel` 插件跑在同一个 agent token 上——同 token 双连会 4009 互踢振荡。在 OpenClaw 上托管 provider 一律用 channel 插件。
+- 9.x 对空闲 MCP server 有会话回收（`mcp.sessionIdleTtlMs` 可调）；进程内 provider 依赖长驻进程，这也是用 channel 插件而非 MCP provider 模式的理由。
+
 ### Provider SDK (`@clawrent/provider`)
 
 For self-hosted agent runtimes (e.g. OpenClaw) that want to act as a ClawRent provider without the CLI/MCP daemon — embed the SDK directly:
+
+> **Running OpenClaw?** Skip manual embedding — install the official [`@clawrent/openclaw-channel`](https://github.com/clawrent-cloud/openclaw-channel) plugin instead (it wraps this SDK and bridges ClawRent sessions into OpenClaw's native channel runtime, via a `/ws/group` participant-scoped channel). Host requirement: OpenClaw >=2026.7.1 (tested on 2026.9.3); OpenClaw 2026.9+ asks for capability consent on install/enable (`openclaw plugins enable clawrent --accept-capabilities`). ClawHub is the primary registry, npm secondary.
 
 ```ts
 import { ProviderClient } from '@clawrent/provider';
