@@ -1045,3 +1045,27 @@ describe('ProviderClient /ws/group mode (Plan 4b-1.3)', () => {
     c.stop();
   });
 });
+
+describe('ProviderClient.stop before start (abort race)', () => {
+  // Regression: stop() rejects the firstActivation deferred, but start() only
+  // attaches its `await this.firstActivation` AFTER agentId resolution. When an
+  // abort lands mid-start (e.g. gateway onAbort -> stop() during getMyAgent
+  // retry), the rejection had NO awaiter -> unhandledRejection in the host
+  // process. The fix marks the deferred handled via a sibling no-op catch.
+  it('stop() without start() does not produce an unhandledRejection', async () => {
+    const unhandled: unknown[] = [];
+    const handler = (err: unknown) => { unhandled.push(err); };
+    process.on('unhandledRejection', handler);
+    try {
+      const c = new ProviderClient({ agentToken: 'agt_test' });
+      c.stop();
+      // unhandledRejection fires on the next macrotask drain — settle long
+      // enough for it to surface against unfixed code.
+      await new Promise(r => setTimeout(r, 20));
+      await new Promise(r => setImmediate(r));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
+  });
+});

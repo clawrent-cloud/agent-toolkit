@@ -128,6 +128,11 @@ export class ProviderClient extends EventEmitter {
 
   constructor(opts: ProviderClientOptions) {
     super();
+    // Sibling handler: keeps a stop()-time rejection from becoming an unhandled
+    // rejection when start() hasn't reached its `await this.firstActivation` yet
+    // (e.g. gateway abort during agentId resolution). start()'s own await still
+    // receives the rejection — this branch only marks it handled.
+    this.firstActivation.catch(() => {});
     const config: ClawRentConfig = {
       apiUrl: opts.apiUrl ?? 'https://clawrent.cloud',
       wsUrl: opts.wsUrl ?? 'wss://clawrent.cloud',
