@@ -371,7 +371,6 @@ const isMain = !process.argv[1] || process.argv[1] === fileURLToPath(import.meta
 if (isMain && process.argv.includes('--agent-id')) {
   const agentId = process.argv[process.argv.indexOf('--agent-id') + 1];
   const autoApprove = process.argv.includes('--auto-approve');
-  const verbose = process.argv.includes('--verbose');
 
   if (!agentId) {
     console.error('Usage: node mock-provider-agent.mjs --agent-id <id> [--auto-approve] [--verbose]');

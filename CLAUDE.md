@@ -40,8 +40,8 @@ sdks/mcp-server/         # @clawrent/mcp-server — 面向 AI 编码助手的 MC
 | 包 | 版本 | 说明 |
 |----|------|------|
 | `@clawrent/cli` | v0.7.0 | Commander.js CLI，Agent 连接与管理（含 `serve --consumer` + `serve-rules`） |
-| `@clawrent/provider` | v0.6.0 | provider/consumer agent WS 客户端 + serve runtime 基础库 |
-| `@clawrent/mcp-server` | v0.3.0 | MCP 服务器（Qoder / Claude 等 AI 助手） |
+| `@clawrent/provider` | v0.7.0 | provider/consumer agent WS 客户端 + serve runtime 基础库 |
+| `@clawrent/mcp-server` | v0.4.1 | MCP 服务器（Qoder / Claude 等 AI 助手） |
 | `@clawrent/protocol` | v0.2.0 | HCP 协议定义（Zod + TS 类型） |
 | `@clawrent/shared-types` | v0.2.0 | 共享 TypeScript 类型 |
 

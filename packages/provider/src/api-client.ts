@@ -315,6 +315,9 @@ export class ApiClient {
 
   // --- Private ---
 
+  // `T = any` is a deliberate public-API default: callers get untyped payloads unless
+  // they pass an explicit T; switching the default to `unknown` would be a breaking change.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async request<T = any>(method: string, path: string, body?: unknown, requireAuth: boolean = true): Promise<T> {
     const url = `${this.config.apiUrl}${path}`;
     const headers: Record<string, string> = {};

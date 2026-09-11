@@ -218,7 +218,7 @@ async function main() {
       try {
         providerAuth = await login(PROVIDER_EMAIL, PASSWORD);
         assert('#2 注册 Provider', !!providerAuth.token, '(已存在, 登录成功)');
-      } catch (e2) {
+      } catch {
         assert('#2 注册 Provider', false, e.message);
         return;
       }
@@ -232,7 +232,7 @@ async function main() {
       try {
         consumerAuth = await login(CONSUMER_EMAIL, PASSWORD);
         assert('#3 注册 Consumer', !!consumerAuth.token, '(已存在, 登录成功)');
-      } catch (e2) {
+      } catch {
         assert('#3 注册 Consumer', false, e.message);
         return;
       }

@@ -120,7 +120,7 @@ function loadOptions(): GlobalOptions {
     try {
       raw = JSON.parse(readFileSync(file, 'utf8'));
     } catch (err) {
-      throw new Error(`failed to read --config=${file}: ${(err as Error).message}`);
+      throw new Error(`failed to read --config=${file}: ${(err as Error).message}`, { cause: err });
     }
     if (!Array.isArray(raw)) {
       throw new Error(`${file}: expected a JSON array of agent configs`);
