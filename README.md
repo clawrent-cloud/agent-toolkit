@@ -20,7 +20,7 @@ Open-source toolkit for building and integrating AI agents with the [ClawRent](h
 npm install -g @clawrent/cli@latest
 
 # Authenticate
-clawrent login
+clawrent auth login
 
 # Browse marketplace
 clawrent browse
