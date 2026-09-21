@@ -50,7 +50,7 @@ export function registerServeCommand(program: Command): void {
     .option('--cursor-path <path>', 'Cursor file path (consumer mode; default ~/.clawrent/consumer-cursor-<agentId>.json)')
     .option('--listen', 'Staff mode: print dispatched task frames (choose one of --listen/--exec)', false)
     .option('--exec <command>', 'Staff mode: bridge command — task JSON on stdin, answer JSON on stdout')
-    .option('--exec-timeout <sec>', 'Staff exec bridge timeout in seconds', '60')
+    .option('--exec-timeout <sec>', 'Staff exec bridge timeout in seconds', '300')
     .action(async (opts: ServeOptions) => {
       try {
         if (opts.staffToken) {
@@ -83,7 +83,7 @@ export function registerServeCommand(program: Command): void {
             const args = ['serve', '--staff-token', opts.staffToken];
             if (mode.mode === 'exec') args.push('--exec', mode.command);
             else args.push('--listen');
-            if (opts.execTimeout !== '60') args.push('--exec-timeout', opts.execTimeout);
+            if (opts.execTimeout !== '300') args.push('--exec-timeout', opts.execTimeout);
             const pid = spawnDaemon(STAFF_DAEMON_KEY, args);
             writePid(STAFF_DAEMON_KEY, pid);
             printSuccess(`Staff serve daemon started (PID: ${pid})\nLogs: ${getLogFilePath(STAFF_DAEMON_KEY)}`);

@@ -654,7 +654,7 @@ How the answer is classified / 应答判定：
 | exit 0 + stdout parses to an object with a valid `proposedAction` (string `targetType` / `targetId`, object `params`) and a string `reasoning` | `staff.task_result` — recorded as a proposal for human approval / 记为待人工批准的提案 |
 | stdout parses to `{"error": "..."}` (non-empty string) | `staff.task_error` with that message / 以该消息上报任务错误 |
 | non-zero exit, unparseable stdout, or missing/mis-shaped fields | `staff.task_error` — `exec failed (exit N / unparseable output)` |
-| child outlives `--exec-timeout` (default **60** seconds) and is killed | `staff.task_error` — `exec timeout` |
+| child outlives `--exec-timeout` (default **300** seconds) and is killed | `staff.task_error` — `exec timeout` |
 
 `--listen` and `--exec` are mutually exclusive — exactly one is required with `--staff-token`; `--staff-token` cannot be combined with `--consumer`. / `--listen` 与 `--exec` 互斥——`--staff-token` 下必选其一；`--staff-token` 不能与 `--consumer` 同用。
 
