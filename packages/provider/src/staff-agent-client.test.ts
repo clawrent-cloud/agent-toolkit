@@ -254,6 +254,30 @@ describe('StaffAgentClient', () => {
     await expect(c.start({ onTask: () => {} })).rejects.toThrow('staff hello timeout');
   });
 
+  it('stop() during the hello wait rejects start() instead of hanging forever', async () => {
+    wss.on('connection', () => { /* silent: start() stays inside its hello wait */ });
+    const c = makeClient({ helloTimeoutMs: 5_000 });
+    const startPromise = c.start({ onTask: () => {} });
+    await sleep(50); // connection established, start() still pending
+
+    c.stop();
+
+    await expect(startPromise).rejects.toThrow('staff client stopped');
+  });
+
+  it('non-terminal disconnect rejects in-flight queries immediately (not as a 60s timeout)', async () => {
+    mockStaffServer({});
+    const c = makeClient({ queryTimeoutMs: 60_000 }); // full window: must NOT be the timeout path
+    await c.start({ onTask: () => {} });
+
+    const pendingQuery = c.query('staff.get_department_tasks');
+    await sleep(20); // let the request frame go out
+    for (const sock of wss.clients) sock.terminate(); // 1006 — reconnectable, not terminal
+
+    await expect(pendingQuery).rejects.toThrow(/query lost/);
+    c.stop();
+  });
+
   it('stop() is idempotent and safe before start', () => {
     const c = makeClient();
     expect(() => { c.stop(); c.stop(); }).not.toThrow();

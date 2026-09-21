@@ -222,7 +222,14 @@ export class StaffAgentClient extends EventEmitter {
     if (this.stopped) return;
     this.stopped = true;
     this.clearTimers();
-    this.clearHelloWaiter();
+    // Settle the start() promise if stop() landed mid-hello-wait (e.g. SIGINT
+    // inside the 15s window): the ws 'close' handler early-returns once stopped,
+    // so without an explicit reject the start() promise would hang forever.
+    if (this.helloWaiter) {
+      const waiter = this.helloWaiter;
+      this.helloWaiter = null;
+      waiter.reject(new Error('staff client stopped'));
+    }
     this.rejectAllPendingQueries(new Error('staff client stopped'));
     if (this.ws) {
       try { this.ws.close(); } catch { /* ignore */ }
@@ -356,6 +363,10 @@ export class StaffAgentClient extends EventEmitter {
         this.emit('staff:dead', code, `max reconnect attempts (${this.maxReconnectAttempts}) reached`);
         return;
       }
+      // In-flight queries are dead: the request frame left on the lost socket
+      // and the server never saw it. Reject now with the true cause instead of
+      // letting each one burn its full 60s window and misreport as "timed out".
+      this.rejectAllPendingQueries(new Error(`staff connection closed, query lost (code ${code})`));
       const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30_000);
       this.reconnectAttempts++;
       this.emit('staff:reconnecting', delay);
@@ -445,13 +456,6 @@ export class StaffAgentClient extends EventEmitter {
   private clearTimers(): void {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-  }
-
-  private clearHelloWaiter(): void {
-    if (this.helloWaiter) {
-      clearTimeout(this.helloWaiter.timer);
-      this.helloWaiter = null;
-    }
   }
 
   private rejectAllPendingQueries(err: Error): void {
