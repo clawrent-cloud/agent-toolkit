@@ -8,6 +8,7 @@ import { ProviderAgent } from './provider-agent.js';
 import { registerAuthTools } from './tools/auth-tools.js';
 import { registerConsumerTools } from './tools/consumer-tools.js';
 import { registerProviderTools } from './tools/provider-tools.js';
+import { registerStaffTools } from './tools/staff-tools.js';
 import { registerDocsTools } from './tools/docs-tools.js';
 
 // Advertise the package's own version (read at runtime from package.json, same
@@ -29,6 +30,15 @@ async function main(): Promise<void> {
     client.setAgentToken(agentTokenEnv);
   }
 
+  // Staff mode via env: if CLAWRENT_STAFF_TOKEN is set, ALL REST calls authenticate
+  // exclusively via X-Staff-Token (staff tool group: whoami / tasks inbox / queries).
+  // Staff tools stay registered either way; without the token their handlers return
+  // an isError result instead of calling the API.
+  const staffTokenEnv = process.env['CLAWRENT_STAFF_TOKEN'];
+  if (staffTokenEnv) {
+    client.setStaffToken(staffTokenEnv);
+  }
+
   // In-process provider agent (shared singleton across all provider tools)
   const providerAgent = new ProviderAgent(client);
 
@@ -41,6 +51,7 @@ async function main(): Promise<void> {
   registerAuthTools(server, client);
   registerConsumerTools(server, client);
   registerProviderTools(server, client, providerAgent);
+  registerStaffTools(server, client);
   registerDocsTools(server, client);
 
   // Forward incoming consumer messages (from WS) as MCP logging notifications, so

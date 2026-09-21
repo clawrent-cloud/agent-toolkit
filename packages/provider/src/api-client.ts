@@ -22,6 +22,11 @@ export class ApiClient {
     this.staffTokenOverride = token;
   }
 
+  /** True while a staff token override is set — staff REST methods require it. */
+  hasStaffToken(): boolean {
+    return this.staffTokenOverride !== null;
+  }
+
   /**
    * Set a token that overrides config.token for subsequent REST requests.
    * Used by the in-process provider agent: once serving with an agentToken,
@@ -278,6 +283,41 @@ export class ApiClient {
 
   async removeFavorite(agentId: string): Promise<unknown> {
     return this.request('DELETE', `/api/favorites/${encodeURIComponent(agentId)}`);
+  }
+
+  // --- Staff (X-Staff-Token exclusive auth; set via setStaffToken) ---
+
+  /** Identify the staff identity resolved from the X-Staff-Token header. */
+  async staffWhoami(): Promise<unknown> {
+    return this.request('GET', '/api/staff/me');
+  }
+
+  /** List tasks in the staff inbox (awaiting ack / result / error). */
+  async staffGetTasks(): Promise<unknown> {
+    return this.request('GET', '/api/staff/tasks');
+  }
+
+  /** Acknowledge (claim) a staff task. */
+  async staffAckTask(taskId: string): Promise<unknown> {
+    return this.request('POST', `/api/staff/tasks/${encodeURIComponent(taskId)}/ack`);
+  }
+
+  /** Submit a task result — becomes a proposal requiring human approval, never executes directly. */
+  async staffSubmitResult(
+    taskId: string,
+    result: { proposedAction: string; reasoning: string },
+  ): Promise<unknown> {
+    return this.request('POST', `/api/staff/tasks/${encodeURIComponent(taskId)}/result`, result);
+  }
+
+  /** Report that a staff task could not be completed. */
+  async staffTaskError(taskId: string, message: string): Promise<unknown> {
+    return this.request('POST', `/api/staff/tasks/${encodeURIComponent(taskId)}/error`, { message });
+  }
+
+  /** Run a whitelisted read-only staff query (user.view / agent.view / session.view / audit.view). */
+  async staffQuery(queryType: string, parameters?: Record<string, unknown>): Promise<unknown> {
+    return this.request('POST', '/api/staff/query', { queryType, parameters: parameters ?? {} });
   }
 
   // --- Health ---
