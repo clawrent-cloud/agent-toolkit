@@ -13,3 +13,5 @@ export { ProviderClient } from './provider-client.js';
 export type { ProviderClientOptions, ProviderCallbacks } from './provider-client.js';
 export { ConsumerAgentClient } from './consumer-agent-client.js';
 export type { ConsumerAgentClientOptions, ConsumerAgentCallbacks } from './consumer-agent-client.js';
+export { StaffAgentClient } from './staff-agent-client.js';
+export type { StaffAgentClientOptions, StaffClientHandlers, StaffQueryResult } from './staff-agent-client.js';
