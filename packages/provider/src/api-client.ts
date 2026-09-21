@@ -5,9 +5,21 @@ export class ApiClient {
   private config: ClawRentConfig;
   /** When set (e.g. by ProviderAgent.start), overrides config.token for REST auth. */
   private agentTokenOverride: string | null = null;
+  /** When set, ALL REST requests authenticate exclusively via X-Staff-Token (no Bearer/x-api-key). */
+  private staffTokenOverride: string | null = null;
 
   constructor(config: ClawRentConfig) {
     this.config = config;
+  }
+
+  /**
+   * Set a staff token for staff endpoints (X-Staff-Token header). While set,
+   * it takes exclusive precedence over every other auth mechanism: REST requests
+   * send ONLY X-Staff-Token (no Authorization Bearer, no x-api-key, no agent token).
+   * Pass null to clear and restore the normal auth precedence.
+   */
+  setStaffToken(token: string | null): void {
+    this.staffTokenOverride = token;
   }
 
   /**
@@ -327,7 +339,10 @@ export class ApiClient {
     }
 
     if (requireAuth) {
-      if (this.agentTokenOverride) {
+      if (this.staffTokenOverride) {
+        // Exclusive: staff endpoints authenticate via X-Staff-Token only.
+        headers['X-Staff-Token'] = this.staffTokenOverride;
+      } else if (this.agentTokenOverride) {
         headers['Authorization'] = `Bearer ${this.agentTokenOverride}`;
       } else if (this.config.token) {
         headers['Authorization'] = `Bearer ${this.config.token}`;
