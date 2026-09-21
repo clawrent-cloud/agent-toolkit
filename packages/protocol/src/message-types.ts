@@ -33,14 +33,15 @@ export const MessageType = {
   SYSTEM_WARNING: 'system.warning',
   SYSTEM_BILLING_UPDATE: 'system.billing_update',
 
-  // Staff messages (Platform ↔ Agent Staff)
-  STAFF_TASK_ASSIGN: 'staff.task_assign',
+  // Staff messages (/ws/staff — Platform ↔ Agent Staff; contract = ws-staff-handler.ts)
+  STAFF_HELLO: 'staff.hello',
+  STAFF_TASKS_SNAPSHOT: 'staff.tasks_snapshot',
+  STAFF_TASK: 'staff.task',
+  STAFF_TASK_ACK: 'staff.task_ack',
   STAFF_TASK_RESULT: 'staff.task_result',
+  STAFF_TASK_ERROR: 'staff.task_error',
   STAFF_QUERY: 'staff.query',
   STAFF_QUERY_RESPONSE: 'staff.query_response',
-  STAFF_ACTION_PROPOSAL: 'staff.action_proposal',
-  STAFF_ACTION_APPROVED: 'staff.action_approved',
-  STAFF_ACTION_REJECTED: 'staff.action_rejected',
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
