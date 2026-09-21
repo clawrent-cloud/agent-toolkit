@@ -5,6 +5,7 @@ import { printError, printSuccess } from '../output.js';
 import { isDaemonRunning, spawnDaemon, writePid, getLogFilePath } from '../daemon.js';
 import { StdioBridge } from './stdio-bridge.js';
 import { runConsumerDaemon } from './consumer.js';
+import { resolveStaffMode, runStaffServe, type StaffMode } from './staff.js';
 import {
   createCorrelationId,
   isResponse,
@@ -13,13 +14,20 @@ import {
   type ResultPayload,
 } from './protocol.js';
 
+/** PID/log key for the staff serve daemon (see `clawrent stop --agent-id serve-staff`). */
+const STAFF_DAEMON_KEY = 'serve-staff';
+
 interface ServeOptions {
-  agentToken: string;
+  agentToken?: string;
+  staffToken?: string;
   autoApprove: boolean;
   pollInterval: string;
   daemon: boolean;
   consumer: boolean;
   cursorPath?: string;
+  listen: boolean;
+  exec?: string;
+  execTimeout: string;
 }
 
 /** Pending instruction tracking: correlationId -> sessionId */
@@ -33,14 +41,71 @@ export function registerServeCommand(program: Command): void {
   program
     .command('serve')
     .description('Start serve daemon - bridge WebSocket sessions to stdin/stdout')
-    .requiredOption('--agent-token <token>', 'Agent token (agt_clawrent_*) for authentication')
+    .option('--agent-token <token>', 'Agent token (agt_clawrent_*) for provider/consumer serve')
+    .option('--staff-token <token>', 'Staff token (stf_|dlg_*) for Agent Staff serve (staff mode)')
     .option('--auto-approve', 'Automatically approve incoming sessions', false)
     .option('--poll-interval <ms>', 'Polling interval for pending sessions (ms)', '5000')
     .option('-d, --daemon', 'Run in background as a daemon process', false)
     .option('--consumer', 'Serve a consumer-owned agent (auto-discovers its sessions)', false)
     .option('--cursor-path <path>', 'Cursor file path (consumer mode; default ~/.clawrent/consumer-cursor-<agentId>.json)')
+    .option('--listen', 'Staff mode: print dispatched task frames (choose one of --listen/--exec)', false)
+    .option('--exec <command>', 'Staff mode: bridge command — task JSON on stdin, answer JSON on stdout')
+    .option('--exec-timeout <sec>', 'Staff exec bridge timeout in seconds', '60')
     .action(async (opts: ServeOptions) => {
       try {
+        if (opts.staffToken) {
+          // --- Staff mode: mutual exclusion, then run standalone (never enters
+          // the provider/consumer flows below). ---
+          if (opts.consumer) {
+            printError('--staff-token cannot be combined with --consumer.');
+            process.exit(1);
+          }
+          let mode: StaffMode;
+          try {
+            mode = resolveStaffMode(opts.listen, opts.exec);
+          } catch (err: unknown) {
+            printError(err instanceof Error ? err.message : String(err));
+            printError('Usage: clawrent serve --staff-token <stf_|dlg_> (--listen | --exec <command>) [--exec-timeout <sec>] [-d]');
+            process.exit(1);
+          }
+          const execTimeoutSec = parseInt(opts.execTimeout, 10);
+          if (!Number.isFinite(execTimeoutSec) || execTimeoutSec <= 0) {
+            printError('--exec-timeout must be a positive number of seconds.');
+            process.exit(1);
+          }
+
+          if (opts.daemon) {
+            const { running, pid: existingPid } = isDaemonRunning(STAFF_DAEMON_KEY);
+            if (running) {
+              printError(`Staff serve daemon already running (PID: ${existingPid}). Use 'clawrent stop --agent-id ${STAFF_DAEMON_KEY}' first.`);
+              process.exit(1);
+            }
+            const args = ['serve', '--staff-token', opts.staffToken];
+            if (mode.mode === 'exec') args.push('--exec', mode.command);
+            else args.push('--listen');
+            if (opts.execTimeout !== '60') args.push('--exec-timeout', opts.execTimeout);
+            const pid = spawnDaemon(STAFF_DAEMON_KEY, args);
+            writePid(STAFF_DAEMON_KEY, pid);
+            printSuccess(`Staff serve daemon started (PID: ${pid})\nLogs: ${getLogFilePath(STAFF_DAEMON_KEY)}`);
+            process.exit(0);
+          }
+
+          const config = loadConfig();
+          await runStaffServe({
+            staffToken: opts.staffToken,
+            mode,
+            execTimeoutSec,
+            apiUrl: config.apiUrl,
+            wsUrl: config.wsUrl,
+          });
+          return;
+        }
+
+        if (!opts.agentToken) {
+          printError('Either --agent-token <token> (provider/consumer serve) or --staff-token <token> (staff serve) is required.');
+          process.exit(1);
+        }
+
         if (opts.consumer) {
           const explicitPoll = process.argv.includes('--poll-interval');
           const pollInterval = explicitPoll ? parseInt(opts.pollInterval, 10) : 30000;
@@ -118,7 +183,7 @@ export function registerServeCommand(program: Command): void {
           process.exit(0);
         }
 
-        await runDaemon(opts);
+        await runDaemon(opts, opts.agentToken);
       } catch (err: unknown) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -172,10 +237,10 @@ export function registerServeRulesCommand(program: Command): void {
     });
 }
 
-async function runDaemon(opts: ServeOptions): Promise<void> {
+async function runDaemon(opts: ServeOptions, agentToken: string): Promise<void> {
   const config = loadConfig();
   // Override token for agentToken auth
-  config.token = opts.agentToken;
+  config.token = agentToken;
   const client = new ApiClient(config);
   const bridge = new StdioBridge();
   const sessionManager = new SessionManager(config.wsUrl);
@@ -426,7 +491,7 @@ async function runDaemon(opts: ServeOptions): Promise<void> {
   }
 
   // Connect via /ws/agent with the token
-  connectAgentWs(opts.agentToken);
+  connectAgentWs(agentToken);
 
   // --- 5b. Re-attach to active sessions that existed before this daemon started
   // (e.g. after daemon restart). Best-effort — failures only emit a notification.
