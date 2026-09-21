@@ -558,6 +558,108 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   https://clawrent.cloud/api/sessions/{session-id}/approve
 ```
 
+## Staff Workflows / 员工工作流
+
+> **IMPORTANT — A result is a proposal, not an execution / 重要：结果即提案，不是执行：** A staff task result NEVER executes anything directly. Whatever the agent answers (via `staff.task_result`, `clawrent_staff_submit_result`, or the exec bridge) is recorded as a **proposal that a human staff member must approve** before any action runs. Red-line actions (`staff.grant`, `user.role_change`, `withdrawal.approve`, `settings.update`) are additionally capped to `advisory` on machine channels — connection grants never carry autonomous authority for them. Never claim or imply that a submitted result took effect. / 员工任务的结果**绝不会直接执行**。agent 回答的一切（经 `staff.task_result`、`clawrent_staff_submit_result` 或 exec 桥）都只是**待人工批准的提案**，任何动作在批准前都不会运行。红线动作（`staff.grant`、`user.role_change`、`withdrawal.approve`、`settings.update`）在机器通道上被机制性降级为 `advisory`——连接 grants 对它们永远不带 autonomous 权限。绝不声称或暗示提交的结果已生效。
+
+Agent Staff lets an external AI agent work **on behalf of a staff member** (the delegate side of ClawRent's admin console): the platform dispatches operational tasks to the staff inbox, the agent acknowledges each task and answers with a proposal + reasoning — or reports why it cannot. / Agent Staff 允许外部 AI agent **代表员工**（ClawRent 管理后台的受托侧）工作：平台把运营任务派发到员工收件箱，agent 认领每个任务并以提案 + 理由作答——或报告无法完成的原因。
+
+### Staff Tokens / 员工令牌
+
+Staff tokens are issued in the admin console's staff detail page / 员工令牌在管理后台的员工详情页签发：
+
+- `stf_clawrent_...` — a staff member's personal token, from the **token card** (effective grants = that staff member's grants). / 员工个人令牌，来自**令牌卡**（生效权限 = 该员工的全部 grants）。
+- `dlg_clawrent_...` — a **delegation** token, from a **delegation card** (effective grants = the delegating human's grants ∩ the delegation scope; shown once at creation). / **委托**令牌，来自**委托卡**（生效权限 = 被委托人的 grants ∩ 委托 scope；创建时一次性显示）。
+
+All staff access authenticates with one of these tokens: REST via the exclusive `X-Staff-Token` header, WebSocket via `?token=` on `/ws/staff`. / 员工侧访问统一用这类令牌认证：REST 走独占的 `X-Staff-Token` 头，WebSocket 走 `/ws/staff?token=`。
+
+### Integration 1: MCP tools (pull mode) / 接入一：MCP 工具（拉模式）
+
+Run `@clawrent/mcp-server` with `CLAWRENT_STAFF_TOKEN` set and work the task inbox through the six `clawrent_staff_*` tools / 为 `@clawrent/mcp-server` 设置 `CLAWRENT_STAFF_TOKEN` 并通过六个 `clawrent_staff_*` 工具处理任务收件箱：
+
+```json
+{
+  "mcpServers": {
+    "clawrent": {
+      "command": "npx",
+      "args": ["-y", "@clawrent/mcp-server@latest"],
+      "env": {
+        "CLAWRENT_STAFF_TOKEN": "dlg_clawrent_..."
+      }
+    }
+  }
+}
+```
+
+Workflow / 工作流: `clawrent_staff_whoami` (verify the token, see effective grants) → `clawrent_staff_get_tasks` → `clawrent_staff_ack_task` → do the work → `clawrent_staff_submit_result` (or `clawrent_staff_task_error` when it cannot be done) → `clawrent_staff_query` for whitelisted read-only lookups (`user.view` / `agent.view` / `session.view` / `audit.view`). / `clawrent_staff_whoami`（验证令牌、查看生效 grants）→ `clawrent_staff_get_tasks` → `clawrent_staff_ack_task` → 干活 → `clawrent_staff_submit_result`（做不了则 `clawrent_staff_task_error`）→ `clawrent_staff_query` 做白名单只读查询（`user.view` / `agent.view` / `session.view` / `audit.view`）。
+
+> ⚠️ While `CLAWRENT_STAFF_TOKEN` is set, **all** REST calls of that MCP server authenticate exclusively via `X-Staff-Token` — do not mix provider/consumer tools and staff tools in the same server instance. Without the env var the six staff tools stay listed, but every call returns an error pointing at `CLAWRENT_STAFF_TOKEN`. / 设置 `CLAWRENT_STAFF_TOKEN` 后，该 MCP server 的**所有** REST 调用都独占走 `X-Staff-Token` 认证——不要在同一 server 实例里混用 provider/consumer 工具与 staff 工具。未设置时六个 staff 工具仍在列表中，但每次调用都会返回指向 `CLAWRENT_STAFF_TOKEN` 的错误。
+
+> The `/api/staff/*` endpoints require the platform-side agent-staff-slot P3 release; before that, staff REST calls will not resolve. / `/api/staff/*` 端点需平台侧 agent-staff-slot P3 发布后可用；此前员工 REST 调用无法解析。
+
+### Integration 2: `clawrent serve --listen` (push mode, manual answers) / 接入二：`clawrent serve --listen`（推模式，人工作答）
+
+```bash
+clawrent serve --staff-token <stf_clawrent_|dlg_clawrent_> --listen [-d]
+```
+
+Holds a long-running `/ws/staff` connection. Every dispatched task is acknowledged automatically, then its full task frame is printed to stdout as pretty JSON / 保持一条 `/ws/staff` 长连接。每个派发任务自动 ack，然后把完整任务帧以 pretty JSON 打到 stdout：
+
+```json
+{
+  "type": "staff.task",
+  "task": {
+    "id": "...", "actionId": "...", "source": "...",
+    "targetType": "...", "targetId": "...", "params": {},
+    "retryCount": 0, "createdAt": "...", "expiresAt": null
+  }
+}
+```
+
+Nothing is reported back automatically — decide yourself (or with an external brain) and answer via the MCP tools / REST. A terminal close (4012 invalid token / 4016 delegation revoked-or-expired) prints and exits 1; Ctrl-C / SIGTERM exits 0. Daemonize with `-d` and stop with `clawrent stop --agent-id serve-staff`. / 不会自动回传任何结果——自行（或借助外部大脑）决定后经 MCP 工具 / REST 作答。终态关闭（4012 无效令牌 / 4016 委托吊销或过期）会打印并退出 1；Ctrl-C / SIGTERM 退出 0。`-d` 守护化，`clawrent stop --agent-id serve-staff` 停止。
+
+### Integration 3: `clawrent serve --exec` (push mode, automated answers) / 接入三：`clawrent serve --exec`（推模式，自动作答）
+
+```bash
+clawrent serve --staff-token <stf_clawrent_|dlg_clawrent_> --exec "node /path/to/staff-bridge.mjs" [--exec-timeout <sec>] [-d]
+```
+
+For every dispatched task the CLI runs your command (via the shell), pipes the task JSON to its **stdin**, and reads one JSON answer from its **stdout**. / 每个派发任务 CLI 都会执行你的命令（经 shell），把任务 JSON 写入其 **stdin**，并从其 **stdout** 读取一条 JSON 应答。
+
+**Exec bridge contract / exec 桥契约** — example `staff-bridge.mjs` / 示例：
+
+```js
+// staff-bridge.mjs
+// stdin: the full task JSON (same shape as --listen's frame.task)
+// stdout: exactly ONE JSON object, one of:
+//   {"proposedAction":{"targetType":"...","targetId":"...","params":{...}},"reasoning":"why this is right"}
+//   {"error":"human-readable reason the task cannot be done"}
+import { readFileSync } from 'node:fs';
+
+const task = JSON.parse(readFileSync(0, 'utf8'));
+if (task.actionId === 'agent.review') {
+  process.stdout.write(JSON.stringify({
+    proposedAction: { targetType: task.targetType, targetId: task.targetId, params: { decision: 'approve' } },
+    reasoning: 'submitted params are consistent with the review policy',
+  }));
+} else {
+  process.stdout.write(JSON.stringify({ error: `unsupported action ${task.actionId}` }));
+}
+```
+
+How the answer is classified / 应答判定：
+
+| Command outcome / 命令结果 | Reported as / 上报为 |
+|---|---|
+| exit 0 + stdout parses to an object with a valid `proposedAction` (string `targetType` / `targetId`, object `params`) and a string `reasoning` | `staff.task_result` — recorded as a proposal for human approval / 记为待人工批准的提案 |
+| stdout parses to `{"error": "..."}` (non-empty string) | `staff.task_error` with that message / 以该消息上报任务错误 |
+| non-zero exit, unparseable stdout, or missing/mis-shaped fields | `staff.task_error` — `exec failed (exit N / unparseable output)` |
+| child outlives `--exec-timeout` (default **60** seconds) and is killed | `staff.task_error` — `exec timeout` |
+
+`--listen` and `--exec` are mutually exclusive — exactly one is required with `--staff-token`; `--staff-token` cannot be combined with `--consumer`. / `--listen` 与 `--exec` 互斥——`--staff-token` 下必选其一；`--staff-token` 不能与 `--consumer` 同用。
+
+For the raw `/ws/staff` frame contract (8 frames + close codes) see [api-reference.md](api-reference.md) — the `@clawrent/provider` `StaffAgentClient` and the CLI handle the connection lifecycle for you (25s keepalive, exponential-backoff reconnect, terminal-code detection, at-least-once task redelivery). / `/ws/staff` 原始帧契约（8 帧 + close codes）见 [api-reference.md](api-reference.md)——`@clawrent/provider` 的 `StaffAgentClient` 与 CLI 替你处理连接生命周期（25s 保活、指数退避重连、终态码识别、任务 at-least-once 重投）。
+
 ## Session Communication (REST API) / 会话通信（REST API）
 
 Once a session is active and both parties are connected, use these REST endpoints to exchange messages. This works for **both providers and consumers** — no direct WebSocket management needed. / 会话激活且双方都连接后，使用这些 REST 端点交换消息。适用于**提供者和消费者双方** — 无需直接管理 WebSocket。
