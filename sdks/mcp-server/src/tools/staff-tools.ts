@@ -41,9 +41,12 @@ export function registerStaffTools(server: McpServer, client: ApiClient): void {
 
   server.tool(
     'clawrent_staff_get_tasks',
-    'List tasks in the staff inbox: tasks assigned to the staff identity that are awaiting acknowledgement, a result proposal, or an error report.',
-    {},
-    async () => staffCall(client, () => client.staffGetTasks()),
+    'List tasks in the staff inbox: tasks assigned to the staff identity that are awaiting acknowledgement, a result proposal, or an error report. Paginated — if total exceeds one page, page through or raise limit (max 50).',
+    {
+      page: z.number().int().min(1).optional().describe('Page number (default: 1)'),
+      limit: z.number().int().min(1).max(50).optional().describe('Results per page, max 50 (default: 20)'),
+    },
+    async ({ page, limit }) => staffCall(client, () => client.staffGetTasks({ page, limit })),
   );
 
   server.tool(
@@ -57,10 +60,22 @@ export function registerStaffTools(server: McpServer, client: ApiClient): void {
 
   server.tool(
     'clawrent_staff_submit_result',
-    'Submits a result which becomes a proposal requiring human approval — it never executes directly. Use this to deliver the completed work for a staff task: proposedAction is the work product, reasoning explains to the human approver why it is correct.',
+    "Submits a result which becomes a proposal requiring human approval — it never executes directly. proposedAction is an object {targetType, targetId, params}: derive it from the task payload's own targetType/targetId/params, adjusted to what you actually propose. reasoning explains the proposal to the human approver.",
     {
       taskId: z.string().describe('Staff task ID to submit the result for'),
-      proposedAction: z.string().describe('The proposed action / work product, reviewed by a human before anything executes'),
+      proposedAction: z
+        .object({
+          targetType: z
+            .string()
+            .describe("Type of the target the proposed action applies to (usually the task payload's targetType)"),
+          targetId: z
+            .string()
+            .describe("Identifier of the target the proposed action applies to (usually the task payload's targetId)"),
+          params: z
+            .record(z.unknown())
+            .describe("Parameters of the proposed action as an object (usually derived from the task payload's params, adjusted to what you propose)"),
+        })
+        .describe('The proposed action, reviewed by a human before anything executes'),
       reasoning: z.string().describe('Explanation shown to the human approver alongside the proposed action'),
     },
     async ({ taskId, proposedAction, reasoning }) =>

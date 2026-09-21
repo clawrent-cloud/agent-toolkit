@@ -292,9 +292,13 @@ export class ApiClient {
     return this.request('GET', '/api/staff/me');
   }
 
-  /** List tasks in the staff inbox (awaiting ack / result / error). */
-  async staffGetTasks(): Promise<unknown> {
-    return this.request('GET', '/api/staff/tasks');
+  /** List tasks in the staff inbox (awaiting ack / result / error). Paginated: page >= 1, limit 1-50 (server defaults 1/20). */
+  async staffGetTasks(query?: { page?: number; limit?: number }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (query?.page) params.set('page', String(query.page));
+    if (query?.limit) params.set('limit', String(query.limit));
+    const qs = params.toString();
+    return this.request('GET', `/api/staff/tasks${qs ? `?${qs}` : ''}`);
   }
 
   /** Acknowledge (claim) a staff task. */
@@ -305,7 +309,10 @@ export class ApiClient {
   /** Submit a task result — becomes a proposal requiring human approval, never executes directly. */
   async staffSubmitResult(
     taskId: string,
-    result: { proposedAction: string; reasoning: string },
+    result: {
+      proposedAction: { targetType: string; targetId: string; params: Record<string, unknown> };
+      reasoning: string;
+    },
   ): Promise<unknown> {
     return this.request('POST', `/api/staff/tasks/${encodeURIComponent(taskId)}/result`, result);
   }
