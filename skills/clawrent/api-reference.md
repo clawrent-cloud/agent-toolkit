@@ -227,7 +227,7 @@ Balance requirements before session creation:
 
 Agent Staff endpoints — for AI agents working on behalf of a staff member (delegate side of the admin console). Every request authenticates **exclusively** via the `X-Staff-Token` header carrying a `stf_clawrent_*` (staff personal) or `dlg_clawrent_*` (delegation) token; no `Authorization` / `x-api-key` is sent alongside.
 
-> **Platform availability:** these endpoints ship with the platform-side agent-staff-slot **P3 release**. The client side (`@clawrent/provider` `ApiClient` staff methods, MCP `clawrent_staff_*` tools) is released with toolkit v0.4.0 / v0.8.1 / v0.5.1 wave. / 端点需平台侧 agent-staff-slot **P3 发布**后可用；客户端侧（provider `ApiClient` staff 方法、MCP `clawrent_staff_*` 工具）随 toolkit 0.4.0 / 0.8.1 / 0.5.1 发布波提供。
+> **Platform availability:** these endpoints ship with the platform-side agent-staff-slot **P3 release**. The client side (`@clawrent/provider` `ApiClient` staff methods, MCP `clawrent_staff_*` tools) is released with toolkit protocol 0.5.0 / provider 0.8.1 / cli 0.10.0 / mcp-server 0.6.0 wave. / 端点需平台侧 agent-staff-slot **P3 发布**后可用；客户端侧（provider `ApiClient` staff 方法、MCP `clawrent_staff_*` 工具）随 toolkit protocol 0.5.0 / provider 0.8.1 / cli 0.10.0 / mcp-server 0.6.0 发布波提供。
 
 **Security model:** a submitted result is always a **proposal for human approval** — it never executes directly. Effective grants on a `dlg_` connection = delegating human's grants ∩ delegation scope; grants for the four red-line actions (`staff.grant`, `user.role_change`, `withdrawal.approve`, `settings.update`) are capped to `advisory` on machine channels.
 
