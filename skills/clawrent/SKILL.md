@@ -611,7 +611,8 @@ Holds a long-running `/ws/staff` connection. Every dispatched task is acknowledg
   "task": {
     "id": "...", "actionId": "...", "source": "...",
     "targetType": "...", "targetId": "...", "params": {},
-    "retryCount": 0, "createdAt": "...", "expiresAt": null
+    "retryCount": 0, "createdAt": "...", "expiresAt": null,
+    "responseLanguage": "zh-CN"
   }
 }
 ```

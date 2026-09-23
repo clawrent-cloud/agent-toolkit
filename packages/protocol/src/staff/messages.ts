@@ -6,6 +6,7 @@ import { z } from 'zod';
  * 契约源 = 主仓 apps/platform-api/src/ws/ws-staff-handler.ts 的实现（本地 Zod schema），
  * 0.4.0 破坏性替换旧 HCP 形状（staff.task_assign / action_proposal / action_approved /
  * action_rejected 等从未在平台落地的设计稿 schema，已删除）。
+ * 0.5.0: StaffTaskPayload +responseLanguage?(平台请求的对内反馈语言)
  *
  * 出站（平台 → staff）：staff.hello / staff.tasks_snapshot / staff.task / staff.query_response
  * 入站（staff → 平台）：staff.task_ack / staff.task_result / staff.task_error / staff.query
@@ -35,6 +36,9 @@ export const StaffTaskPayloadSchema = z.object({
   retryCount: z.number().int(),
   createdAt: z.string(),
   expiresAt: z.string().nullable(),
+  // 平台请求的反馈语言(BCP-47 tag,如 zh-CN):reasoning 请按此语言产出;advisory 不强制校验。
+  // 0.5.0 additive——旧消费者(strip)与旧 payload(无字段)双向兼容。
+  responseLanguage: z.string().optional(),
 });
 export type StaffTaskPayload = z.infer<typeof StaffTaskPayloadSchema>;
 

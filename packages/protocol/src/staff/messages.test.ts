@@ -9,7 +9,7 @@ const TASK: StaffTaskPayload = {
   params: { note: 'x' }, retryCount: 0, createdAt: '2026-09-21T00:00:00.000Z', expiresAt: null,
 };
 
-describe('staff frames 0.4.0', () => {
+describe('staff frames 0.5.0', () => {
   it('result frame requires reasoning + proposedAction', () => {
     expect(() => StaffTaskResultFrameSchema.parse({ type: 'staff.task_result', taskId: 't1' })).toThrow();
     expect(StaffTaskResultFrameSchema.parse({
@@ -30,6 +30,13 @@ describe('staff frames 0.4.0', () => {
     expect(StaffOutboundFrameSchema.safeParse({ type: 'staff.tasks_snapshot', tasks: [TASK] }).success).toBe(true);
     expect(StaffOutboundFrameSchema.safeParse({ type: 'staff.task', task: TASK }).success).toBe(true);
     expect(StaffOutboundFrameSchema.safeParse({ type: 'staff.query_response', queryId: 'q1', data: {} }).success).toBe(true);
+  });
+  it('responseLanguage 字段:additive——带字段 parse 通过且保留,不带(parse 旧 payload)也通过', () => {
+    const withLang = StaffTaskPayloadSchema.safeParse({ ...TASK, responseLanguage: 'zh-CN' });
+    expect(withLang.success).toBe(true);
+    expect((withLang.data as Record<string, unknown>)['responseLanguage']).toBe('zh-CN');
+    // 旧 payload(无字段)兼容:fixture 本身即无该字段
+    expect(StaffTaskPayloadSchema.safeParse(TASK).success).toBe(true);
   });
   it('query_response accepts error variant', () => {
     expect(StaffOutboundFrameSchema.safeParse({ type: 'staff.query_response', queryId: 'q1', error: 'denied' }).success).toBe(true);

@@ -382,9 +382,12 @@ On connect the server greets with `staff.hello`, then sends `staff.tasks_snapsho
   "targetType": "...", "targetId": "...", "params": {},
   "retryCount": 0,
   "createdAt": "2026-09-21T00:00:00.000Z",
-  "expiresAt": null
+  "expiresAt": null,
+  "responseLanguage": "zh-CN"
 }
 ```
+
+> `responseLanguage` is **optional** (protocol ≥ 0.5.0): the language (BCP-47 tag, e.g. `zh-CN`) the platform requests your `reasoning` and proposed-action content to be written in. It is a strong hint, **not** enforced/validated; absent → answer in the task's own language. / `responseLanguage` 为**可选**字段（protocol ≥ 0.5.0）：平台请求 `reasoning` 与提案内容使用的产出语言（BCP-47 tag，如 `zh-CN`）。这是强提示，平台**不**强制校验；缺省时按任务自身语言作答。
 
 **Frames: platform → staff / 平台 → 员工**
 
