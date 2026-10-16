@@ -39,8 +39,9 @@ const PATH_DENIED: 'PATH_DENIED' = Mecha.MECHA_ERROR_CODES[0];
 const WIN32 = process.platform === 'win32';
 
 /** 统一比较形态：分隔符归一（win32 把 `\` 视作分隔符；posix 反斜杠是合法
- * 文件名字符，不动）+ win32 仅折叠盘符。其余逐字符大小写敏感。 */
-function comparableForm(p: string): string {
+ * 文件名字符，不动）+ win32 仅折叠盘符。其余逐字符大小写敏感。导出供
+ * program-guard 共用同一规范形（两个 guard 的比较口径绝不允许漂移）。 */
+export function comparableForm(p: string): string {
   let s = WIN32 ? p.replace(/[\\/]+/g, '/') : p.replace(/\/+/g, '/');
   if (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1); // 去尾分隔符（POSIX 根除外）
   if (WIN32) s = s.replace(/^[a-zA-Z]:/, (d) => d.toLowerCase()); // 仅盘符
@@ -68,8 +69,9 @@ function isEnoent(err: unknown): boolean {
 /** 真实化（两侧比较的规范形来源）：win32 用 native——盘上真实大小写 + 展开
  * 8.3 短名（普通 realpathSync 保留输入大小写，实证不构成规范化）；posix 大小
  * 写敏感 FS 上 realpathSync 即规范形（native 在 mac 大小写不敏感能力上反而
- * 会把变体放行，违背 posix 分支的 fail-closed 断言）。 */
-function realpathCanonical(p: string): string {
+ * 会把变体放行，违背 posix 分支的 fail-closed 断言）。导出供 program-guard
+ * 共用同一规范形（两个 guard 的比较口径绝不允许漂移）。 */
+export function realpathCanonical(p: string): string {
   return WIN32 ? fs.realpathSync.native(p) : fs.realpathSync(p);
 }
 
