@@ -42,6 +42,14 @@ export const MessageType = {
   STAFF_TASK_ERROR: 'staff.task_error',
   STAFF_QUERY: 'staff.query',
   STAFF_QUERY_RESPONSE: 'staff.query_response',
+
+  // Mecha device-channel messages (Device daemon ↔ Platform; schemas = mecha/*.ts)
+  MECHA_OP: 'mecha.op',
+  MECHA_OP_RESULT: 'mecha.opResult',
+  MECHA_EXEC_CHUNK: 'mecha.execChunk',
+  MECHA_CONFIRM_REQUEST: 'mecha.confirmRequest',
+  MECHA_CONFIRM_RESULT: 'mecha.confirmResult',
+  MECHA_MANIFEST: 'mecha.manifest',
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];

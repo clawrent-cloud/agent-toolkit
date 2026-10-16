@@ -4,7 +4,7 @@ import { MessageType } from './message-types.js';
 const allMessageTypes = Object.values(MessageType);
 
 export const SenderSchema = z.object({
-  role: z.enum(['provider', 'consumer', 'platform', 'staff']),
+  role: z.enum(['provider', 'consumer', 'platform', 'staff', 'mecha']),
   agentId: z.string(),
 });
 

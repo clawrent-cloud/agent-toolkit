@@ -47,3 +47,4 @@ export {
   StaffOutboundFrameSchema,
   type StaffOutboundFrame,
 } from './staff/messages.js';
+export * as Mecha from './mecha/index.js';
