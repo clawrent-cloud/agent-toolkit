@@ -9,8 +9,9 @@ import { isAbsolute } from 'node:path';
  * 驾驶员的「本会话能做什么」清单。schema 形状即 spec §5/§11 的协议契约，
  * 后续 mecha.* 帧族（ops/confirm/frames）与本文件同风格扩展。
  *
- * LIMITS 按 spec §11 verbatim 钉死：单一事实源 = MECHA_LIMITS_DEFAULTS，
- * schema 用 z.literal 引用该常量（不散落字面量、wire 上拒绝偏离值）。
+ * LIMITS 数值以 MECHA_LIMITS_DEFAULTS 为单一事实源（spec §11 verbatim）；
+ * schema 只做形状校验（正整数）——policy 由平台下发（session.offer / policy.update），
+ * 平台侧调参不应使 wire 帧过不了 schema；设备侧执行口径以常量为准。
  */
 
 /** spec §11 默认限额（verbatim,单一事实源）。 */
@@ -36,15 +37,15 @@ export const MechaProgramEntrySchema = z.object({
 });
 export type MechaProgramEntry = z.infer<typeof MechaProgramEntrySchema>;
 
-/** 会话限额(spec §11,值以 literal 钉死)。 */
+/** 会话限额:形状校验(正整数);数值口径以 MECHA_LIMITS_DEFAULTS(spec §11)为准。 */
 export const MechaLimitsSchema = z.object({
-  confirmTimeoutMs: z.literal(MECHA_LIMITS_DEFAULTS.confirmTimeoutMs),
-  disconnectGraceMs: z.literal(MECHA_LIMITS_DEFAULTS.disconnectGraceMs),
-  heartbeatMs: z.literal(MECHA_LIMITS_DEFAULTS.heartbeatMs),
-  maxFileBytes: z.literal(MECHA_LIMITS_DEFAULTS.maxFileBytes),
-  execTimeoutDefaultMs: z.literal(MECHA_LIMITS_DEFAULTS.execTimeoutDefaultMs),
-  execTimeoutMaxMs: z.literal(MECHA_LIMITS_DEFAULTS.execTimeoutMaxMs),
-  maxConcurrentExecs: z.literal(MECHA_LIMITS_DEFAULTS.maxConcurrentExecs),
+  confirmTimeoutMs: z.number().int().positive(),
+  disconnectGraceMs: z.number().int().positive(),
+  heartbeatMs: z.number().int().positive(),
+  maxFileBytes: z.number().int().positive(),
+  execTimeoutDefaultMs: z.number().int().positive(),
+  execTimeoutMaxMs: z.number().int().positive(),
+  maxConcurrentExecs: z.number().int().positive(),
 });
 export type MechaLimits = z.infer<typeof MechaLimitsSchema>;
 

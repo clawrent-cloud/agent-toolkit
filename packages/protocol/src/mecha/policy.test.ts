@@ -47,10 +47,16 @@ describe('mecha policy & capability manifest schemas', () => {
     expect(result.success).toBe(false);
   });
 
-  it('limits 值偏离 spec §11 钉死值抛 Zod 错误(literal 钉死,不收散值)', () => {
-    const drifted = { ...MECHA_LIMITS_DEFAULTS, maxConcurrentExecs: 2 };
-    const result = MechaPolicySchema.safeParse({ dirs: [DIR], programs: [], limits: drifted });
-    expect(result.success).toBe(false);
+  it('limits 形状校验:不同合法限额解析通过,非正/非整数拒绝', () => {
+    // 平台侧调参不使 wire 帧过不了 schema(裁定:形状校验,数值口径归常量)
+    const tuned = { ...MECHA_LIMITS_DEFAULTS, maxConcurrentExecs: 2, heartbeatMs: 15_000 };
+    expect(MechaPolicySchema.safeParse({ dirs: [DIR], programs: [], limits: tuned }).success).toBe(true);
+    const zero = { ...MECHA_LIMITS_DEFAULTS, heartbeatMs: 0 };
+    expect(MechaPolicySchema.safeParse({ dirs: [DIR], programs: [], limits: zero }).success).toBe(false);
+    const negative = { ...MECHA_LIMITS_DEFAULTS, confirmTimeoutMs: -1 };
+    expect(MechaPolicySchema.safeParse({ dirs: [DIR], programs: [], limits: negative }).success).toBe(false);
+    const fractional = { ...MECHA_LIMITS_DEFAULTS, maxFileBytes: 1.5 };
+    expect(MechaPolicySchema.safeParse({ dirs: [DIR], programs: [], limits: fractional }).success).toBe(false);
   });
 
   it('MECHA_LIMITS_DEFAULTS 各值等于 spec §11 数字', () => {
