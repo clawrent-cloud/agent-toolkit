@@ -1,9 +1,38 @@
-import { afterAll, describe, expect, it, type TestContext } from 'vitest';
+import { afterAll, describe, expect, it, vi, type TestContext } from 'vitest';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { Mecha } from '@clawrent/protocol';
 import { resolveWithinWhitelist, type PathGuardResult } from './path-guard.js';
+
+// 合成 EACCES 缝：仅当 realpathSync(.native) 对名为 eaccs-dir 的段抛 ENOENT
+// 时翻译成 EACCES——其余全部透传真实 fs（fixture 读写不受影响）。
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const syntheticEaccs = (p: fs.PathLike): never => {
+    throw Object.assign(new Error(`synthetic EACCES: ${String(p)}`), { code: 'EACCES' });
+  };
+  // 仅当 realpath* 对 basename 为 eaccs-dir 的段抛 ENOENT 时翻译为 EACCES
+  const wrap = (real: (p: fs.PathLike) => string) =>
+    ((p: fs.PathLike) => {
+      try {
+        return real(p);
+      } catch (err) {
+        const isMarker =
+          (err as NodeJS.ErrnoException)?.code === 'ENOENT' &&
+          typeof p === 'string' &&
+          p.split(/[\\/]/).pop() === 'eaccs-dir';
+        if (isMarker) throw syntheticEaccs(p);
+        throw err;
+      }
+    }) as typeof real;
+  return {
+    ...actual,
+    realpathSync: Object.assign(wrap(actual.realpathSync.bind(actual)), {
+      native: wrap(actual.realpathSync.native.bind(actual)),
+    }),
+  } as unknown as typeof actual;
+});
 
 // ── fixture 基建（os.tmpdir，plan 全局约束）────────────────────────────────
 
@@ -86,12 +115,12 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
     expect(resolveWithinWhitelist('whitelist/file.txt', ws, [w]).ok).toBe(true);
     // 绝对路径
     expect(resolveWithinWhitelist(file, ws, [w]).ok).toBe(true);
-    // 嵌套子目录：real 是真实路径
+    // 嵌套子目录：real 是真实路径（两侧同用 native 规范形——win32 展开 8.3 短名）
     const nested = expectOk(resolveWithinWhitelist('whitelist/sub', ws, [w]));
-    expect(nested).toBe(fs.realpathSync(sub));
+    expect(nested).toBe(fs.realpathSync.native(sub));
     // 白名单目录本身
     const itself = expectOk(resolveWithinWhitelist('whitelist', ws, [w]));
-    expect(itself).toBe(fs.realpathSync(w));
+    expect(itself).toBe(fs.realpathSync.native(w));
     // 白名单条目带尾分隔符同样授权
     expect(resolveWithinWhitelist('whitelist/file.txt', ws, [w + sep]).ok).toBe(true);
   });
@@ -102,7 +131,7 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
     fs.mkdirSync(w);
 
     const real = expectOk(resolveWithinWhitelist('whitelist/new.txt', ws, [w]));
-    expect(real).toBe(join(fs.realpathSync(w), 'new.txt'));
+    expect(real).toBe(join(fs.realpathSync.native(w), 'new.txt'));
   });
 
   it('.. 穿越出界拒；穿越后仍落在界内则通过（按落点判，不按 .. 字面判）', () => {
@@ -155,6 +184,52 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
     expect(Mecha.MECHA_ERROR_CODES[0]).toBe('PATH_DENIED');
   });
 
+  // ── 仅 ENOENT 回退（非 ENOENT 错误 = 不可判定 = 硬拒）─────────────────────
+
+  it('非 ENOENT（合成 EACCES）不当作"不存在"回退：快速路径硬拒', () => {
+    const ws = makeWorkspace();
+    const w = join(ws, 'whitelist');
+    fs.mkdirSync(w);
+    // eaccs-dir 在白名单内且不存在：真实 ENOENT 被缝翻译为 EACCES。
+    // 旧实现（catch-all 回退）会拼回白名单内路径而误放行；现在必须拒。
+    expectDenied(resolveWithinWhitelist('whitelist/eaccs-dir', ws, [w]));
+    expectDenied(resolveWithinWhitelist('whitelist/eaccs-dir/new.txt', ws, [w]));
+  });
+
+  it('非 ENOENT（合成 EACCES）不当作"不存在"回退：逐段回退中硬拒', () => {
+    const ws = makeWorkspace();
+    const w = join(ws, 'whitelist');
+    fs.mkdirSync(w);
+    // 整条路径不存在：向上回退走到 eaccs-dir 段（basename 命中缝）时收 EACCES，
+    // 必须就地硬拒，而不是继续向上拼回白名单内的祖先。
+    expectDenied(resolveWithinWhitelist('eaccs-dir/a/file.txt', ws, [w]));
+    expectDenied(resolveWithinWhitelist('eaccs-dir', ws, [w]));
+  });
+
+  // ── 参数契约：cwd 与白名单条目必须绝对路径（配置错误 fail-closed 抛错）────
+
+  it('cwd 相对/空：抛 TypeError', () => {
+    const ws = makeWorkspace();
+    expect(() => resolveWithinWhitelist('x', './relative-cwd', [])).toThrowError(
+      /必须为绝对路径/,
+    );
+    expect(() => resolveWithinWhitelist('x', '', [])).toThrowError(/必须为绝对路径/);
+    // 合法绝对 cwd 不因契约检查误伤
+    expect(resolveWithinWhitelist('.', ws, [ws]).ok).toBe(true);
+  });
+
+  it('白名单条目相对/空：抛 TypeError（配置错误，不做静默解析）', () => {
+    const ws = makeWorkspace();
+    expect(() => resolveWithinWhitelist('x', ws, ['relative/dir'])).toThrowError(
+      /必须为绝对路径/,
+    );
+    expect(() => resolveWithinWhitelist('x', ws, [''])).toThrowError(/必须为绝对路径/);
+    // 混合条目：相对条目在前也要抛（upfront 校验，契约确定性）
+    expect(() => resolveWithinWhitelist('x', ws, [ws, 'rel'])).toThrowError(
+      /必须为绝对路径/,
+    );
+  });
+
   // ── 大小写（Review Focus #1）─────────────────────────────────────────────
 
   it('大小写变体：win32 大小写不敏感通过，posix 按大小写拒', () => {
@@ -177,6 +252,31 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
     } else {
       expectDenied(resolveWithinWhitelist(existingVariant, ws, [w]));
       expectDenied(resolveWithinWhitelist(missingVariant, ws, [w]));
+    }
+  });
+
+  it('同形异码兄弟（ß/ẞ）：真实侧大小写敏感，JS 折叠不得制造影子加持', () => {
+    const ws = makeWorkspace();
+    const lower = join(ws, 'straße');
+    const upper = join(ws, 'straẞe');
+    fs.mkdirSync(lower);
+    fs.writeFileSync(join(lower, 'file.txt'), 'x');
+
+    let distinct = true;
+    try {
+      fs.mkdirSync(upper);
+    } catch {
+      distinct = false; // 本盘文件系统把 ß/ẞ 视为同名——OS 层面不存在影子兄弟
+    }
+
+    if (distinct) {
+      // 两个真实兄弟并存：白名单是 ẞ 目录，请求 ß 目录内已存在文件。
+      // JS toLowerCase 把 ẞ 折成 ß 会错误放行（影子加持越界）；真实侧敏感比较必须拒。
+      expectDenied(resolveWithinWhitelist(join(lower, 'file.txt'), ws, [upper]));
+    } else {
+      // 折叠盘上 homoglyph 变体经 OS 解析落在真实目录；真实落点在白名单内 → 放行
+      const res = resolveWithinWhitelist(join(ws, 'STRAẞE', 'file.txt'), ws, [lower]);
+      expect(res.ok).toBe(true);
     }
   });
 
@@ -220,7 +320,7 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
     fs.symlinkSync(inner, join(w, 'link.txt'));
 
     const real = expectOk(resolveWithinWhitelist('whitelist/link.txt', ws, [w]));
-    expect(real).toBe(fs.realpathSync(inner));
+    expect(real).toBe(fs.realpathSync.native(inner));
   });
 
   it('白名单目录本身是链接（win32 junction / posix symlink）：授权其真实指向', () => {
@@ -238,7 +338,7 @@ describe('resolveWithinWhitelist（文件系统硬边界）', () => {
 
     // 双侧真实化：白名单条目与请求路径都落到真实目录，比较按真实落点命中
     const real = expectOk(resolveWithinWhitelist('link-w/file.txt', ws, [link]));
-    expect(real).toBe(fs.realpathSync(target));
+    expect(real).toBe(fs.realpathSync.native(target));
   });
 
   // junction 是无需开发者模式/管理员即可建的 reparse point，遍历时与目录符号
