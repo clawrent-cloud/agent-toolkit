@@ -1,0 +1,8 @@
+{
+  "extends": "@clawrent/config/tsconfig/node",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}

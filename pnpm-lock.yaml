@@ -162,6 +162,40 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  sdks/mecha:
+    dependencies:
+      '@clawrent/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@clawrent/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
+    devDependencies:
+      '@clawrent/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.18)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.19.17)
+
 packages:
 
   '@cacheable/memory@2.2.0':
