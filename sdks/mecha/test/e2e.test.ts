@@ -29,7 +29,8 @@ import { createDriverBridge, type DriverBridge } from './driver-bridge.js';
  *  ④「跨会话马甲」= test 4；⑤「假 python.bat」= test 5；⑥「halt」= test 6。
  *
  * 等待纪律：真实 socket 套件一律 poll（waitFor / 日志轮询 / 进程存活探针），
- * 绝不真实 sleep；长时标经 policy.limits（disconnectGraceMs）注入。
+ * 绝不真实 sleep；唯一例外是 racePending 的 200ms 负断言观察窗（证明「持续
+ * 未收口」需要有界等待）；长时标经 policy.limits（disconnectGraceMs）注入。
  */
 
 // ── fixture 基建（os.tmpdir 隔离 + 唯一 profile → win32 管道名互不冲突）─────
@@ -169,9 +170,17 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** resolve-or-pending 探针：'pending' = promise 至今未收口（哑管道悬置断言）。 */
-function racePending<T>(p: Promise<T>): Promise<T | 'pending'> {
-  return Promise.race([p, Promise.resolve('pending' as const)]);
+/** resolve-or-pending 探针（200ms 真实观察窗，T24 review 裁定）：'settled' =
+ * promise 在窗内收口；'pending' = 窗口耗尽仍未收口（哑管道悬置断言）。
+ * 旧实现第二臂 `Promise.resolve('pending')` 即决——只证明「此刻未收口」，
+ * 窗是假的；有界窗才真正钉住「持续悬置」。 */
+function racePending(p: Promise<unknown>): Promise<'settled' | 'pending'> {
+  return Promise.race([
+    p.then(() => 'settled' as const),
+    new Promise((resolve) => setTimeout(resolve, 200)).then(
+      () => 'pending' as const,
+    ),
+  ]);
 }
 
 /** 永驻脚本：落 PID 标记后靠 interval 保活（exec 被杀 = PID 探针转死）。 */
