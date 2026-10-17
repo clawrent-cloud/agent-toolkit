@@ -77,8 +77,11 @@ import type { ProvenanceStore } from '../enforcement/provenance.js';
  *
  * 错误兜底：单 op 任何未预期异常（含判级穷尽哨兵、fs errno）→ IO_ERROR
  * 结果返回——executor 的契约是「每 op 必有结果」，绝不向 session/驱动通道
- * 抛异常。confirm 回调自身抛错（通道故障）同路径兜底；CONFIRM_TIMEOUT 由
- * session 层（Task 12）以超时拒绝注入，本层只 await。
+ * 抛异常。confirm 回调自身抛错（通道故障）同路径兜底；确认的「非人拒」结局
+ * （T1/T2 超时、断链取消）由 session 层（Task 12）在包装回调里以
+ * MechaConfirmSettlement.confirmEnd 标记注入（approved:false + 标记），
+ * requireConfirm 据标记选码（CONFIRM_TIMEOUT / IO_ERROR 'link down'），
+ * 本层只 await。
  *
  * 行车记录（Controller ruling R8，binding）：每 op 结束恰好一次
  * `log.logOp(envelope, result)`（结果帧即审计载荷——成功/失败/拒绝全量；
@@ -92,12 +95,29 @@ export interface ExecutorLogger {
   logOp(envelope: Mecha.MechaOpEnvelope, result: Mecha.MechaOpResult): void;
 }
 
+/**
+ * 确认结算（session 层 Task 12 包装回调的产物）：MechaConfirmResult 之上加
+ * 可选 `confirmEnd` 标记——「非人拒」的确认结局由 session 注入（approved:false
+ * + 标记），requireConfirm 据标记选码：
+ *  - `confirmEnd: 'timeout'`   → CONFIRM_TIMEOUT（等待人工批准超时，默认拒）；
+ *  - `confirmEnd: 'link_down'` → IO_ERROR 'link down'（链路已断/会话已终，
+ *    非人拒也不是超时——宁杀勿失控口径）；
+ *  - 无标记的 approved:false    → CONFIRM_DENIED（驾驶员主动拒绝，原口径，
+ *    向后兼容 Task 10/11 既有调用方与测试）。
+ * plain MechaConfirmResult 结构满足本接口（confirmEnd 可选）。
+ */
+export interface MechaConfirmSettlement extends Mecha.MechaConfirmResult {
+  confirmEnd?: 'timeout' | 'link_down';
+}
+
 /** executor 依赖注入（R1 裁定：scratchDir 构造参数，Task 12 session 接线）。 */
 export interface MechaExecutorDeps {
   /** 会话策略取值器：每 op 现取——policy.update tighten 立即生效的前提。 */
   policy: () => Mecha.MechaPolicy;
   provenance: ProvenanceStore;
-  confirm: (req: Mecha.MechaConfirmRequest) => Promise<Mecha.MechaConfirmResult>;
+  /** 确认回调（session 层包装后注入：300s 超时 + 断链取消，见
+   * MechaConfirmSettlement）。 */
+  confirm: (req: Mecha.MechaConfirmRequest) => Promise<MechaConfirmSettlement>;
   log: ExecutorLogger;
   /** 会话暂存区绝对路径（file.upload 唯一落点；spec §5.6 即焚区）。 */
   scratchDir: string;
@@ -111,6 +131,7 @@ export interface MechaExecutorDeps {
 const PATH_DENIED: 'PATH_DENIED' = Mecha.MECHA_ERROR_CODES[0];
 const PROGRAM_DENIED: 'PROGRAM_DENIED' = Mecha.MECHA_ERROR_CODES[1];
 const CONFIRM_DENIED: 'CONFIRM_DENIED' = Mecha.MECHA_ERROR_CODES[2];
+const CONFIRM_TIMEOUT: 'CONFIRM_TIMEOUT' = Mecha.MECHA_ERROR_CODES[3];
 const EXEC_TIMEOUT: 'EXEC_TIMEOUT' = Mecha.MECHA_ERROR_CODES[4];
 const SIZE_LIMIT: 'SIZE_LIMIT' = Mecha.MECHA_ERROR_CODES[5];
 const IO_ERROR: 'IO_ERROR' = Mecha.MECHA_ERROR_CODES[6];
@@ -484,9 +505,11 @@ export class MechaExecutor {
   }
 
   /** T1/T2 统一确认闸（T2 与 T1 同路，无特判；未来 exec 分支复用）。批准返
-   * 回 null；拒绝返回 CONFIRM_DENIED 结果。契约：调用方在 requireConfirm 之
-   * 前不得有任何写动作（部分副作用零容忍）。requestId 稳定方案 = opId +
-   * ':confirm'（v0 每 op 至多一次确认）。 */
+   * 回 null；拒绝按结算标记选码：无标记 = 驾驶员主动拒（CONFIRM_DENIED）；
+   * 'timeout' = 人工批准超时默认拒（CONFIRM_TIMEOUT，session 注入）；
+   * 'link_down' = 链路已断/会话已终，确认取消（IO_ERROR 'link down'，
+   * session 注入——迟到的批准绝不能放行，见 T11 约束 #1）。requestId 稳定
+   * 方案 = opId + ':confirm'（v0 每 op 至多一次确认）。 */
   private async requireConfirm(
     envelope: Mecha.MechaOpEnvelope,
     tier: 'T1' | 'T2',
@@ -499,6 +522,17 @@ export class MechaExecutor {
       summary,
     });
     if (decision.approved) return null;
+    if (decision.confirmEnd === 'timeout') {
+      return fail(
+        envelope.opId,
+        CONFIRM_TIMEOUT,
+        '确认等待超时，默认拒绝执行',
+        tier,
+      );
+    }
+    if (decision.confirmEnd === 'link_down') {
+      return fail(envelope.opId, IO_ERROR, 'link down', tier);
+    }
     return fail(envelope.opId, CONFIRM_DENIED, '驾驶员拒绝执行该操作', tier);
   }
 
