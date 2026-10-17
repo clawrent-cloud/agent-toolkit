@@ -7,9 +7,10 @@ import {
   type IpcErrorResponse,
   type MechaStatusIpcResponse,
 } from '../ipc.js';
+import { runSetup } from './setup.js';
 
-// T15：mecha CLI（bin `mecha` → dist/cli/index.js）。本任务注册 status/halt
-// 两个命令（T18 setup / T19 uninstall / T20 update 后续追加）。
+// T15：mecha CLI（bin `mecha` → dist/cli/index.js）。已注册 status/halt
+// （T15）+ setup（T18）；T19 uninstall / T20 update 后续追加。
 //
 // 退出码契约：成功 0；守护进程未运行 1（「机甲守护进程未运行」）；其他失败 1。
 // 输出走 process.exitCode 而非 process.exit——避免 stdout 为管道时输出被截断。
@@ -112,6 +113,25 @@ program
       return;
     }
     console.log('已请求紧急刹车：杀死执行中操作、作废会话、断开连接');
+  });
+
+// T18：setup 向导接线。保持薄——交互、探测、注册、落盘全部内聚在 runSetup
+//（缺省 io = readline/console）。--api-base 必填（v0 不做 API base 的交互
+// 提问）；成功摘要由向导自身输出，此处补一行 T19 席位旗标（向导摘要不含）。
+program
+  .command('setup')
+  .description('setup 向导：设备登录 → 目录白名单 → 程序预设 → 注册平台 → 写配置')
+  .requiredOption('--api-base <url>', '平台 API base（如 https://api.clawrent.cloud）')
+  .option('-p, --profile <name>', '机甲实例 profile（同机多实例，experimental）', 'default')
+  .action(async (opts: { apiBase: string; profile: string }) => {
+    try {
+      const result = await runSetup({ apiBase: opts.apiBase, profile: opts.profile });
+      console.log(
+        `mecha setup 完成：设备 ${result.deviceId}（runtime ${result.runtimeInstalled ? '已装' : '未装'}、自启 ${result.autostartInstalled ? '已装' : '未装'}）`,
+      );
+    } catch (err) {
+      fail(`mecha setup 失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   });
 
 try {
