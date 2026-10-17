@@ -106,6 +106,17 @@ describe('MechaDriver — attached event', () => {
   });
 });
 
+describe('MechaDriver — manifest access', () => {
+  it('getManifest returns null before attach and the manifest after (T22 manifest tool reads this)', () => {
+    const { channel, driver } = makeDriver();
+    expect(driver.getManifest()).toBeNull();
+
+    attach(channel);
+
+    expect(driver.getManifest()).toEqual(MANIFEST);
+  });
+});
+
 describe('MechaDriver — fs/upload ops', () => {
   it('fsWrite sends a ClawRentMessage-compatible mecha.op envelope and resolves on the correlated opResult', async () => {
     const { channel, driver } = makeDriver();

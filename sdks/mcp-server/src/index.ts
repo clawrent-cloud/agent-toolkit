@@ -10,6 +10,7 @@ import { registerConsumerTools } from './tools/consumer-tools.js';
 import { registerProviderTools } from './tools/provider-tools.js';
 import { registerStaffTools } from './tools/staff-tools.js';
 import { registerDocsTools } from './tools/docs-tools.js';
+import { getMechaDriver, registerMechaTools } from './tools/mecha-tools.js';
 
 // Advertise the package's own version (read at runtime from package.json, same
 // pattern as the CLI) instead of a hardcoded string that drifts on every bump.
@@ -53,6 +54,13 @@ async function main(): Promise<void> {
   registerProviderTools(server, client, providerAgent);
   registerStaffTools(server, client);
   registerDocsTools(server, client);
+
+  // Mecha driving tools. The session-bound MechaDriver is injected by the
+  // future platform-side adapter via setMechaDriver (see mecha-tools.ts) — the
+  // holder getter passed here is re-evaluated on every tool call, so a driver
+  // injected after startup is picked up. Until then getMechaDriver() is null
+  // and every clawrent_mecha_* tool answers 机甲未连接.
+  registerMechaTools(server, getMechaDriver);
 
   // Forward incoming consumer messages (from WS) as MCP logging notifications, so
   // the host UI can surface them in real time. Some clients treat these as logs

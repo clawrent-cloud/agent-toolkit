@@ -131,6 +131,14 @@ export class MechaDriver {
     this.attachedCbs.add(cb);
   }
 
+  /** The attached CapabilityManifest, or null before `mecha.manifest` arrives.
+   * Read-side complement to the 'attached' event (spec §9 layer 1: "attached
+   * 事件/manifest") — late subscribers (e.g. the Task 22 MCP manifest tool)
+   * would otherwise miss an attach that happened before they registered. */
+  getManifest(): Mecha.CapabilityManifest | null {
+    return this.manifest;
+  }
+
   // ── fs / upload / exec ops ────────────────────────────────────────────────
 
   fsList(path: string, opts?: MechaListOptions): Promise<Mecha.MechaOpResult> {
