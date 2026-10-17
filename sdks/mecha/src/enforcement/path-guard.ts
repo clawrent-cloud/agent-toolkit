@@ -81,8 +81,13 @@ export function realpathCanonical(p: string): string {
  * symlink 被拒的机制所在）。**仅 ENOENT 继续回退**：其他 errno 返回 null，
  * 由调用方硬拒。连根都 ENOENT（理论不可达）时退回裸根——它不构成真实前缀
  * 命中，最终按拒处理（fail-closed）。
+ *
+ * 导出供 confirm-tier（R2 裁定）共用同一 realpath 语义：exec argv 非首元素
+ * 按 exec.cwd resolve 后经此真实化（存在，或最长存在前缀+尾段）才查溯源，
+ * 解析不可判定（null）则跳过该元素。confirm-tier 侧**不做白名单判断**——
+ * 溯源判红与白名单无关，两个消费场景互不耦合，仅共享真实化口径。
  */
-function realpathAllowingTail(abs: string): string | null {
+export function realpathAllowingTail(abs: string): string | null {
   try {
     return realpathCanonical(abs);
   } catch (err) {
