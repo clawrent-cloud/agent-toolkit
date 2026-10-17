@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { Mecha } from '@clawrent/protocol';
-import { realpathAllowingTail } from './path-guard.js';
+import { realpathAllowingTail, realpathCanonical } from './path-guard.js';
 import type { ProgramGuardResult } from './program-guard.js';
 
 /**
@@ -25,17 +25,26 @@ import type { ProgramGuardResult } from './program-guard.js';
  * `cwd` resolve 后，用 path-guard 导出的 `realpathAllowingTail` 真实化——
  * 存在（或最长存在前缀+尾段）才查溯源；解析不可判定（非 ENOENT，返回 null）
  * 则跳过该元素的溯源检查。**不做白名单判断**——溯源判红与白名单无关（白名单
- * 外的溯源文件更该红）；argv[0] 的"解析"即 matchProgram 产物 `absPath`（裸
- * 名=登记真身，绝对路径=realpath 产物），同样参与溯源判红——登记真身本身是
- * driver-authored 文件也必须红。
+ * 外的溯源文件更该红）；argv[0] 的解析 = matchProgram 产物 `absPath` 再过
+ * `realpathCanonical`（裸名命中返回的是登记路径 verbatim，须归一到与溯源
+ * 登记键同一宇宙——review 裁定 Important 4），同样参与溯源判红——登记真身
+ * 本身是 driver-authored 文件也必须红；归一失败（表构建与 exec 之间二进制
+ * 被删）仅跳过 argv[0] 的溯源检查（程序表已把关、spawn 必败，漏红无实害）。
  *
  * 解释器身份判定（裁定，非字符串前缀猜）：取 `ctx.program.absPath` 的
- * basename，剥 `.exe/.bat/.cmd` 后缀、整串小写，查精确清单（下方
- * INTERPRETER_INLINE）——按**真身文件名**判定，不是 argv[0] 字符串、不是
- * 登记名（登记名与真身分歧时以真身为准）。旗标匹配扫描 argv[1..] 全部
+ * basename，剥 `.exe/.bat/.cmd` 后缀 → 剥尾部版本后缀（`python3.11` →
+ * `python3`）→ 整串小写 → 别名归一（`py`/`pythonw` → python、
+ * `pwsh-preview` → pwsh——review 裁定 Important 3 的固定顺序），查精确清单
+ * （下方 INTERPRETER_INLINE）——按**真身文件名**判定，不是 argv[0] 字符串、
+ * 不是登记名（登记名与真身分歧时以真身为准）。旗标匹配扫描 argv[1..] 全部
  * 位置（`python -u -c`、`cmd /d /c` 的旗标不在首位）：
  *  - 整 token 精确相等，或 `flag + '='` equals 形（`--eval=<code>`、
  *    `-Command=<code>`——review 裁定扩充）；
+ *  - attached-value 前缀族（review 裁定 Critical 1/2）：`cmd` 的 `/c`/`/k`
+ *    与 `python`/`python3` 的 `-c`——shell 粘连的 `/cdir`、`-cprint(1)` 以
+ *    单 argv 元素抵达，精确匹配会漏红；前缀字母取各 CLI 独占段（cmd 无其他
+ *    c/k 首开关、CPython 无其他 c 首短选项），零误红代价；node 的短旗标不
+ *    吃粘连值（`-e<code>` 报 bad option，实测）故不加；
  *  - powershell/pwsh 另认 `-enc…` 无歧义缩写族（EncodedCommand——`-enc` 起
  *    的任何前缀都无歧义指向它，ExecutionPolicy 是 `-ex…` 无碰撞；review
  *    裁定扩充，经典 LOLBin 内联入口）；
@@ -70,13 +79,13 @@ const PROGRAM_DENIED: 'PROGRAM_DENIED' = Mecha.MECHA_ERROR_CODES[1];
 
 const WIN32 = process.platform === 'win32';
 
-/** win32 盘符相对形态（`C:foo`——盘符后有字符但无分隔符）。node 的
- * path.resolve 对这类形态只按本进程 cwd 归基（非当前盘一律猜盘根），而 exec
- * 子进程按内核 per-drive cwd 表解析——两侧解析基座可能分歧，溯源判红的解析
- * 结果因此不可靠（歧义不可判定）。宁可误红不可漏红：一律 T2——消费者极少
- * 以盘符相对形态传参，误红代价是一次确认；漏红代价是红卡逃逸。仅 win32
- * 生效（posix 上该形态只是普通文件名，无解析歧义）。 */
-const DRIVE_RELATIVE = /^[a-zA-Z]:[^\\/]/;
+/** win32 盘符相对形态（`C:foo`，以及裸盘符 `C:`——两者都按内核 per-drive
+ * cwd 表解析）。node 的 path.resolve 对这类形态只按本进程 cwd 归基（非当前
+ * 盘一律猜盘根），而 exec 子进程按内核 per-drive cwd 表解析——两侧解析基座
+ * 可能分歧，溯源判红的解析结果因此不可靠（歧义不可判定）。宁可误红不可漏
+ * 红：一律 T2——消费者极少以盘符相对形态传参，误红代价是一次确认；漏红代
+ * 价是红卡逃逸。仅 win32 生效（posix 上该形态只是普通文件名，无解析歧义）。 */
+const DRIVE_RELATIVE = /^[a-zA-Z]:(?:[^\\/]|$)/;
 
 /** computeTier 的注入上下文：program 为 executor 预先求好的 matchProgram
  * 产物（本函数不做程序表复查）；provenance 为溯源判红谓词
@@ -89,18 +98,22 @@ export interface ComputeTierContext {
 
 /**
  * 解释器内联旗标精确清单（plan 钉死 + review 裁定扩充，逐项测试钉）：键=
- * 程序真身 basename（去 .exe/.bat/.cmd、小写）。caseInsensitive 仅限
- * Windows 原生解释器（powershell/cmd——旗标解析大小写不敏感，`-command`/
- * `/CE` 都是真实内联入口，精确大小写会漏红；PowerShell 参数绑定在所有宿主
- * 平台都折叠大小写）；POSIX 解释器旗标大小写敏感（`bash -C` 是 noclobber
- * 而非内联，折叠反而语义错误）。
+ * 程序真身 basename（去 .exe/.bat/.cmd → 剥尾部版本后缀 → 小写 → 别名归一，
+ * 见 interpreterEntry）。caseInsensitive 仅限 Windows 原生解释器
+ * （powershell/cmd——旗标解析大小写不敏感，`-command`/`/CE` 都是真实内联
+ * 入口，精确大小写会漏红；PowerShell 参数绑定在所有宿主平台都折叠大小写）；
+ * POSIX 解释器旗标大小写敏感（`bash -C` 是 noclobber 而非内联，折叠反而
+ * 语义错误）。
  */
 interface InterpreterInlineSpec {
   /** 精确旗标；`flag + '='` equals 形（`--eval=<code>`、`-Command=<code>`）
    * 一并命中（review 裁定 4）。 */
   flags: string[];
-  /** 无歧义缩写前缀族（review 裁定 1）：`-enc…` 只能是 EncodedCommand
-   * （ExecutionPolicy 是 `-ex…`，无碰撞），整族一并命中。 */
+  /** 无歧义前缀族：attached-value 形态（`cmd /c<command>`、`python -c<code>`
+   * ——shell 粘连后作为单 argv 元素抵达）与无歧义缩写族（powershell `-enc…`
+   * 只能是 EncodedCommand）。前缀字母取各解释器 CLI 的独占段——cmd 无其他
+   * c/k 首字母开关、CPython 无其他 c 首字母短选项，零误红代价（review 裁定
+   * Critical 1/2）。 */
   prefixes?: string[];
   /** win32 原生旗标解析大小写不敏感（powershell/cmd——PowerShell 参数绑定
    * 在所有宿主平台折叠大小写；POSIX 解释器一律敏感）。 */
@@ -112,8 +125,8 @@ interface InterpreterInlineSpec {
 }
 
 const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
-  python: { flags: ['-c'], caseInsensitive: false },
-  python3: { flags: ['-c'], caseInsensitive: false },
+  python: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
+  python3: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
   node: { flags: ['-e', '--eval', '--expression'], caseInsensitive: false },
   powershell: {
     flags: ['-command', '-encodedcommand'],
@@ -128,17 +141,33 @@ const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   bash: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
   sh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
   zsh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
-  cmd: { flags: ['/c', '/ce', '/k'], caseInsensitive: true },
+  // /ce 旧缩写被 /c 前缀吸收（review 裁定 Critical 1 折叠 Minor 7）
+  cmd: { flags: ['/c', '/k'], prefixes: ['/c', '/k'], caseInsensitive: true },
 };
 
-/** 程序真身 → 解释器身份条目：basename 剥 `.exe/.bat/.cmd`（大小写不敏感）、
- * 整串小写后查表。非解释器返回 undefined。零 fs 访问。 */
+/** 真身名 → 解释器键别名（review 裁定 Important 3）：高频真实世界形态——
+ * Windows 官方启动器 `py` 与窗口版 `pythonw` 归 python 族；预览通道
+ * `pwsh-preview` 归 pwsh。（python/python3 本就是同规格的独立键。） */
+const INTERPRETER_ALIASES: Record<string, string> = {
+  py: 'python',
+  pythonw: 'python',
+  'pwsh-preview': 'pwsh',
+};
+
+/** 真身名尾部版本后缀（`python3.11`、`python3.11.9`——Ubuntu 上 realpath 化
+ * symlink 的高频形态），剥到 `python3`。要求点号打头故 `python3` 本身不动。 */
+const VERSION_SUFFIX = /\.\d+(\.\d+)*$/;
+
+/** 程序真身 → 解释器身份条目：basename 剥 `.exe/.bat/.cmd`（大小写不敏感）
+ * → 剥尾部版本后缀 → 整串小写 → 别名归一（review 裁定 Important 3 的固定
+ * 顺序）后查表。非解释器返回 undefined。零 fs 访问。 */
 function interpreterEntry(absPath: string): InterpreterInlineSpec | undefined {
   const base = path
     .basename(absPath)
     .replace(/\.(exe|bat|cmd)$/i, '')
+    .replace(VERSION_SUFFIX, '')
     .toLowerCase();
-  return INTERPRETER_INLINE[base];
+  return INTERPRETER_INLINE[INTERPRETER_ALIASES[base] ?? base];
 }
 
 /** 解释器内联判定：argv[1..] 任一元素命中该解释器的内联旗标（精确、
@@ -175,8 +204,19 @@ function execTier(
   }
 
   // ③ 溯源判红：argv 任一元素解析为溯源文件 → T2
-  //    argv[0]：matchProgram 产物即其真实化形态
-  if (ctx.provenance(ctx.program.absPath)) {
+  //    argv[0]：absPath 先过 realpathCanonical——与 ProvenanceStore 的登记键
+  //    同一宇宙（裸名命中返回的是登记路径 verbatim：符号链接段/8.3 短名/
+  //    大小写漂移都会让 verbatim 键查不中登记键，review 裁定 Important 4）。
+  //    真实化失败（表构建与 exec 之间二进制被删）→ 仅跳过 argv[0] 的溯源
+  //    检查：程序表命中已把关，二进制不存在则 spawn 必败、op 终不执行——
+  //    跳过不扩大该次执行的实际风险面（漏红无实害；fail 方向分析钉此）。
+  let argv0Real: string | null;
+  try {
+    argv0Real = realpathCanonical(ctx.program.absPath);
+  } catch {
+    argv0Real = null;
+  }
+  if (argv0Real !== null && ctx.provenance(argv0Real)) {
     return 'T2';
   }
   //    argv[1..]：R2 裁定——按 exec.cwd resolve 后 realpathAllowingTail 真实

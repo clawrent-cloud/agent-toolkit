@@ -62,6 +62,11 @@ const okProgram = (absPath: string): ProgramGuardResult => ({ ok: true, absPath 
 const deniedProgram = (): ProgramGuardResult => ({ ok: false, code: 'PROGRAM_DENIED' });
 const none = (): boolean => false;
 
+/** 全部字母大小写翻转（win32 大小写不敏感语义下的"同一文件"登记变体）。 */
+function flipCase(p: string): string {
+  return p.replace(/[a-zA-Z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c));
+}
+
 const execOp = (argv: string[], cwd: string): Mecha.MechaOp => ({
   type: 'exec.run',
   argv,
@@ -177,6 +182,8 @@ describe('computeTier（confirm-tier 判级）', () => {
 
   it('溯源判红：argv[0] 登记真身本身是 driver-authored 文件 → T2', () => {
     const ws = makeWorkspace();
+    fs.mkdirSync(join(ws, 'tools'), { recursive: true });
+    fs.writeFileSync(join(ws, 'tools', 'tool.js'), 'x'); // 必须实存——argv[0] 键经 realpathCanonical
     const absPath = join(CANONICAL(ws), 'tools', 'tool.js');
     expect(
       computeTier(execOp([join(ws, 'tools', 'tool.js')], ws), {
@@ -184,6 +191,38 @@ describe('computeTier（confirm-tier 判级）', () => {
         provenance: (p) => p === absPath,
       }),
     ).toBe('T2');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    '溯源判红：argv[0] 登记路径为非规范形态（大小写漂移）经 realpathCanonical 归一后命中 → T2',
+    () => {
+      const ws = makeWorkspace();
+      fs.mkdirSync(join(ws, 'tools'), { recursive: true });
+      fs.writeFileSync(join(ws, 'tools', 'tool.js'), 'x');
+      const canonical = join(CANONICAL(ws), 'tools', 'tool.js');
+      const registered = flipCase(canonical); // win32 同一文件的登记变体
+      expect(registered).not.toBe(canonical);
+      // verbatim 键查不中登记键；归一后命中（review 裁定 Important 4）
+      expect(
+        computeTier(execOp(['node', 'x'], ws), {
+          program: okProgram(registered),
+          provenance: (p) => p === canonical,
+        }),
+      ).toBe('T2');
+    },
+  );
+
+  it('溯源判红：argv[0] 真身不可真实化（表构建与 exec 之间被删）→ 跳过 argv[0] 溯源检查 → T1', () => {
+    const ws = makeWorkspace();
+    // 哨兵只对 gone 路径判红：T1 证明 argv[0] 检查真的被跳过（没问）
+    const provenance = vi.fn((p: string) => p.includes('gone'));
+    expect(
+      computeTier(execOp(['tool'], ws), {
+        program: okProgram(join(ws, 'gone', 'prog.exe')),
+        provenance,
+      }),
+    ).toBe('T1');
+    expect(provenance).not.toHaveBeenCalledWith(expect.stringContaining('gone'));
   });
 
   it('溯源判红：路径不存在但登记过该真实化形态（最长存在前缀+尾段）→ T2（R2）', () => {
@@ -212,17 +251,19 @@ describe('computeTier（confirm-tier 判级）', () => {
     expect(provenance).not.toHaveBeenCalledWith(expect.stringContaining('eaccs-dir'));
   });
 
-  it('win32 盘符相对 argv 形态（C:foo）：node 与子进程内核解析基座可能分歧 → fail-safe T2', () => {
+  it('win32 盘符相对 argv 形态（C:foo 及裸盘符 C:）：node 与子进程内核解析基座可能分歧 → fail-safe T2', () => {
     const ws = makeWorkspace();
-    const res = computeTier(execOp(['python', 'C:evil.py'], ws), {
-      program: okProgram(join(ws, 'bin', 'python.exe')),
-      provenance: none, // 溯源全假仍红——形态本身即解析不可靠
-    });
-    // 仅 win32 有盘符相对语义（posix 上 C:foo 只是普通文件名，T1）
-    if (process.platform === 'win32') {
-      expect(res).toBe('T2');
-    } else {
-      expect(res).toBe('T1');
+    for (const arg of ['C:evil.py', 'C:']) {
+      const res = computeTier(execOp(['python', arg], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none, // 溯源全假仍红——形态本身即解析不可靠
+      });
+      // 仅 win32 有盘符相对语义（posix 上 C:foo 只是普通文件名，T1）
+      if (process.platform === 'win32') {
+        expect(res).toBe('T2');
+      } else {
+        expect(res).toBe('T1');
+      }
     }
   });
 
@@ -462,6 +503,85 @@ describe('computeTier（confirm-tier 判级）', () => {
         provenance: none,
       }),
     ).toBe('T2');
+  });
+
+  it('解释器内联扩充：attached-value 粘连形（cmd /c<命令>、python -c<代码>）→ T2', () => {
+    const ws = makeWorkspace();
+    // cmd：/c /k 的粘连命令形（shell 粘连后单元素抵达），大小写不敏感
+    for (const arg of ['/cver', '/Cver', '/kver', '/Kver']) {
+      expect(
+        computeTier(execOp(['cmd', arg], ws), {
+          program: okProgram(join(ws, 'bin', 'cmd.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    // python/python3：-c 粘连代码形（CPython 无其他 c 首短选项，零误红）
+    for (const name of ['python', 'python3']) {
+      expect(
+        computeTier(execOp([name, '-cprint(1)'], ws), {
+          program: okProgram(join(ws, 'bin', `${name}.exe`)),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    // 负对照回归：cmd 非 c/k 首开关（/d）与 python 非 -c 旗标（-u）仍 T1
+    expect(
+      computeTier(execOp(['cmd', '/d'], ws), {
+        program: okProgram(join(ws, 'bin', 'cmd.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    expect(
+      computeTier(execOp(['python', '-u', join(ws, 's.py')], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
+  it('解释器内联扩充：真身名归一（版本后缀剥离 + 别名）→ 解释器识别', () => {
+    const ws = makeWorkspace();
+    // 版本后缀：python3.11（Ubuntu realpath 化 symlink 形态）→ python3
+    expect(
+      computeTier(execOp(['python3.11', '-c', 'print(1)'], ws), {
+        program: okProgram(join(ws, 'bin', 'python3.11')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 版本后缀 + 扩展名组合：python3.11.exe
+    expect(
+      computeTier(execOp(['python3', '-c', 'print(1)'], ws), {
+        program: okProgram(join(ws, 'bin', 'python3.11.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 别名：py / pythonw 归 python 族，pwsh-preview 归 pwsh
+    expect(
+      computeTier(execOp(['py', '-c', 'print(1)'], ws), {
+        program: okProgram(join(ws, 'bin', 'py.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    expect(
+      computeTier(execOp(['pythonw', '-c', 'print(1)'], ws), {
+        program: okProgram(join(ws, 'bin', 'pythonw.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    expect(
+      computeTier(execOp(['pwsh-preview', '-Command', 'Get-Process'], ws), {
+        program: okProgram(join(ws, 'bin', 'pwsh-preview.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 负对照：非解释器真身名（即便带版本形态）不因归一被误认
+    expect(
+      computeTier(execOp(['myrunner', '-c', 'x'], ws), {
+        program: okProgram(join(ws, 'bin', 'myrunner2.0')),
+        provenance: none,
+      }),
+    ).toBe('T1');
   });
 
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────
