@@ -1,4 +1,4 @@
-export const PROVIDER_PACKAGE_VERSION = '0.8.2';
+export const PROVIDER_PACKAGE_VERSION = '0.9.0';
 
 export { ApiClient } from './api-client.js';
 export type { ClawRentConfig } from './config.js';
@@ -15,3 +15,10 @@ export { ConsumerAgentClient } from './consumer-agent-client.js';
 export type { ConsumerAgentClientOptions, ConsumerAgentCallbacks } from './consumer-agent-client.js';
 export { StaffAgentClient } from './staff-agent-client.js';
 export type { StaffAgentClientOptions, StaffClientHandlers, StaffQueryResult } from './staff-agent-client.js';
+export { MechaDriver } from './mecha-driver.js';
+export type {
+  MechaChannel,
+  MechaDriverOptions,
+  MechaExecInput,
+  MechaListOptions,
+} from './mecha-driver.js';
