@@ -32,15 +32,25 @@ import type { ProgramGuardResult } from './program-guard.js';
  * 解释器身份判定（裁定，非字符串前缀猜）：取 `ctx.program.absPath` 的
  * basename，剥 `.exe/.bat/.cmd` 后缀、整串小写，查精确清单（下方
  * INTERPRETER_INLINE）——按**真身文件名**判定，不是 argv[0] 字符串、不是
- * 登记名（登记名与真身分歧时以真身为准）。旗标匹配=argv[1..] 元素**整
- * token 精确相等**（不拆组合旗标、不做前缀/子串猜测），扫描全部位置——
- * `python -u -c`、`cmd /d /c` 的旗标不在首位；代价是旗标成为子命令参数时
- * 误红（如 `python script.py -c`），落在宁可误红不可漏红的方向。
+ * 登记名（登记名与真身分歧时以真身为准）。旗标匹配扫描 argv[1..] 全部
+ * 位置（`python -u -c`、`cmd /d /c` 的旗标不在首位）：
+ *  - 整 token 精确相等，或 `flag + '='` equals 形（`--eval=<code>`、
+ *    `-Command=<code>`——review 裁定扩充）；
+ *  - powershell/pwsh 另认 `-enc…` 无歧义缩写族（EncodedCommand——`-enc` 起
+ *    的任何前缀都无歧义指向它，ExecutionPolicy 是 `-ex…` 无碰撞；review
+ *    裁定扩充，经典 LOLBin 内联入口）；
+ *  - bash/sh/zsh 另认单杠组合短旗标簇含小写 `c`（`-lc`/`-cl`/`-ic`…——簇内
+ *    有 c 即消费下一参数为命令串；大小写敏感，`-C` 是 noclobber 不是内联；
+ *    仅此三解释器启用——cmd/powershell 的多字符旗标语义不同，不做逐字解析；
+ *    review 裁定扩充）；
+ *  除此不拆组合、不做前缀/子串猜测；代价是旗标成为子命令参数时误红（如
+ *  `python script.py -c`），落在宁可误红不可漏红的方向。
  *
- * 已知 v0 留白（有意不外推，扩清单须改此处并逐个补测试钉）：`pwsh
- * -EncodedCommand`、`cmd /k`、POSIX 组合旗标（`bash -lc`）、`node
- * --eval=<code>` 均为真实内联入口，未在 plan 钉死的精确清单内——留待 review
- * 裁定后扩。
+ * v0 清单外明确不补（非内联入口，或已被其他机制覆盖）：`pwsh -File
+ * <script>` 是文件执行——脚本路径作为 argv 元素已由溯源判红覆盖；
+ * `python -m <module>` 是模块执行——spec §6.3 传递性执行已裁定接受（已启动
+ * 进程内部行为无法逐层管控）；`-e`/`-en` 级 pwsh 缩写有歧义（PowerShell
+ * 参数绑定直接报错，不构成执行入口）。
  */
 
 /** 判级产物：tier 字符串，或 exec 硬拒（deny 码域钉死为协议七码中的两位——
@@ -78,32 +88,52 @@ export interface ComputeTierContext {
 }
 
 /**
- * 解释器内联旗标精确清单（plan 钉死，测试逐个钉）：键=程序真身 basename
- * （去 .exe/.bat/.cmd、小写）。caseInsensitive 仅限 Windows 原生解释器
- * （powershell/cmd——旗标解析大小写不敏感，`-command`/`/CE` 都是真实内联
- * 入口，精确大小写会漏红）；POSIX 解释器旗标大小写敏感（`bash -C` 是
- * noclobber 而非内联，折叠反而语义错误）。
+ * 解释器内联旗标精确清单（plan 钉死 + review 裁定扩充，逐项测试钉）：键=
+ * 程序真身 basename（去 .exe/.bat/.cmd、小写）。caseInsensitive 仅限
+ * Windows 原生解释器（powershell/cmd——旗标解析大小写不敏感，`-command`/
+ * `/CE` 都是真实内联入口，精确大小写会漏红；PowerShell 参数绑定在所有宿主
+ * 平台都折叠大小写）；POSIX 解释器旗标大小写敏感（`bash -C` 是 noclobber
+ * 而非内联，折叠反而语义错误）。
  */
-const INTERPRETER_INLINE: Record<
-  string,
-  { flags: string[]; caseInsensitive: boolean }
-> = {
+interface InterpreterInlineSpec {
+  /** 精确旗标；`flag + '='` equals 形（`--eval=<code>`、`-Command=<code>`）
+   * 一并命中（review 裁定 4）。 */
+  flags: string[];
+  /** 无歧义缩写前缀族（review 裁定 1）：`-enc…` 只能是 EncodedCommand
+   * （ExecutionPolicy 是 `-ex…`，无碰撞），整族一并命中。 */
+  prefixes?: string[];
+  /** win32 原生旗标解析大小写不敏感（powershell/cmd——PowerShell 参数绑定
+   * 在所有宿主平台折叠大小写；POSIX 解释器一律敏感）。 */
+  caseInsensitive: boolean;
+  /** POSIX 组合短旗标簇（review 裁定 3，仅 bash/sh/zsh）：单杠多字符簇含
+   * 小写 `c` 即视为 `-c`（`-lc`/`-cl`/`-ic`…——簇内有 c 即消费下一参数为
+   * 命令串）。cmd/powershell 多字符旗标语义不同，不做逐字解析。 */
+  shortFlagClusterC?: boolean;
+}
+
+const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   python: { flags: ['-c'], caseInsensitive: false },
   python3: { flags: ['-c'], caseInsensitive: false },
-  node: { flags: ['-e', '--eval'], caseInsensitive: false },
-  powershell: { flags: ['-command'], caseInsensitive: true },
-  pwsh: { flags: ['-command'], caseInsensitive: true },
-  bash: { flags: ['-c'], caseInsensitive: false },
-  sh: { flags: ['-c'], caseInsensitive: false },
-  zsh: { flags: ['-c'], caseInsensitive: false },
-  cmd: { flags: ['/c', '/ce'], caseInsensitive: true },
+  node: { flags: ['-e', '--eval', '--expression'], caseInsensitive: false },
+  powershell: {
+    flags: ['-command', '-encodedcommand'],
+    prefixes: ['-enc'],
+    caseInsensitive: true,
+  },
+  pwsh: {
+    flags: ['-command', '-encodedcommand'],
+    prefixes: ['-enc'],
+    caseInsensitive: true,
+  },
+  bash: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
+  sh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
+  zsh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
+  cmd: { flags: ['/c', '/ce', '/k'], caseInsensitive: true },
 };
 
 /** 程序真身 → 解释器身份条目：basename 剥 `.exe/.bat/.cmd`（大小写不敏感）、
  * 整串小写后查表。非解释器返回 undefined。零 fs 访问。 */
-function interpreterEntry(
-  absPath: string,
-): { flags: string[]; caseInsensitive: boolean } | undefined {
+function interpreterEntry(absPath: string): InterpreterInlineSpec | undefined {
   const base = path
     .basename(absPath)
     .replace(/\.(exe|bat|cmd)$/i, '')
@@ -111,7 +141,8 @@ function interpreterEntry(
   return INTERPRETER_INLINE[base];
 }
 
-/** 解释器内联判定：argv[1..] 任一元素整 token 等于该解释器的内联旗标。 */
+/** 解释器内联判定：argv[1..] 任一元素命中该解释器的内联旗标（精确、
+ * `flag='` equals 形、`-enc…` 缩写族、POSIX 组合簇含 c——见清单注释）。 */
 function isInterpreterInline(absPath: string, argv: string[]): boolean {
   const entry = interpreterEntry(absPath);
   if (!entry) return false;
@@ -119,7 +150,11 @@ function isInterpreterInline(absPath: string, argv: string[]): boolean {
     const raw = argv[i];
     if (raw === undefined) continue; // 越界防御（循环条件上不为真）
     const token = entry.caseInsensitive ? raw.toLowerCase() : raw;
-    if (entry.flags.includes(token)) return true;
+    for (const flag of entry.flags) {
+      if (token === flag || token.startsWith(`${flag}=`)) return true;
+    }
+    if (entry.prefixes?.some((p) => token.startsWith(p))) return true;
+    if (entry.shortFlagClusterC && /^-[^-]*c/.test(token)) return true;
   }
   return false;
 }

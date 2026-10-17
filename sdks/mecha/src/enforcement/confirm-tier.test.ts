@@ -377,6 +377,93 @@ describe('computeTier（confirm-tier 判级）', () => {
     ).toBe('T1');
   });
 
+  // ── 解释器内联（review 裁定扩充，逐模式钉）────────────────────────────────
+
+  it('解释器内联扩充：powershell/pwsh + -EncodedCommand / -enc 缩写族（大小写不敏感）→ T2', () => {
+    const ws = makeWorkspace();
+    const b64 = 'R2V0LVByb2Nlc3M=';
+    for (const flag of ['-EncodedCommand', '-encodedcommand', '-ENC', '-enc']) {
+      expect(
+        computeTier(execOp(['pwsh', flag, b64], ws), {
+          program: okProgram(join(ws, 'bin', 'pwsh.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    expect(
+      computeTier(execOp(['powershell', '-ENCODEDCOMMAND', b64], ws), {
+        program: okProgram(join(ws, 'bin', 'powershell.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+  });
+
+  it('解释器内联扩充：cmd + /k（含 /K——跑完保壳，同类内联入口）→ T2', () => {
+    const ws = makeWorkspace();
+    for (const flag of ['/k', '/K']) {
+      expect(
+        computeTier(execOp(['cmd', flag, 'dir'], ws), {
+          program: okProgram(join(ws, 'bin', 'cmd.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+  });
+
+  it('解释器内联扩充：bash/sh/zsh 组合短旗标簇含 c（-lc/-cl/-ic）→ T2；无 c 簇与外溢 T1', () => {
+    const ws = makeWorkspace();
+    for (const [name, cluster] of [
+      ['bash', '-lc'],
+      ['sh', '-cl'],
+      ['zsh', '-ic'],
+    ] as Array<[string, string]>) {
+      expect(
+        computeTier(execOp([name, cluster, 'ls'], ws), {
+          program: okProgram(join(ws, 'bin', name)),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    // 负对照：簇内无小写 c（-l login、-lC 含大写 C=noclobber）不红
+    expect(
+      computeTier(execOp(['bash', '-l', 'script'], ws), {
+        program: okProgram(join(ws, 'bin', 'bash')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    expect(
+      computeTier(execOp(['bash', '-lC', 'script'], ws), {
+        program: okProgram(join(ws, 'bin', 'bash')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    // 组合簇规则仅 bash/sh/zsh——不外溢到 python（其多字符旗标语义不同）
+    expect(
+      computeTier(execOp(['python', '-lc', 'x'], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
+  it('解释器内联扩充：equals 形（node --eval= / --expression=、pwsh -Command=）→ T2', () => {
+    const ws = makeWorkspace();
+    for (const flag of ['--eval=console.log(1)', '--expression=console.log(1)']) {
+      expect(
+        computeTier(execOp(['node', flag], ws), {
+          program: okProgram(join(ws, 'bin', 'node.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    expect(
+      computeTier(execOp(['pwsh', '-Command=Get-Process'], ws), {
+        program: okProgram(join(ws, 'bin', 'pwsh.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+  });
+
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────
 
   it('schema 外 op type：响亮抛错（穷尽哨兵，编码错误不静默判级）', () => {
