@@ -10,12 +10,16 @@ import { comparableForm } from './path-guard.js';
  * 同步落盘**（构造不落盘——首启无文件即空表，直到首次 record 才建）。
  *
  * 比较口径：复用 path-guard 的 `comparableForm`（分隔符归一 + win32 折叠盘符）
- * ——不另造第二套归一；在此之上 **win32 整串小写**（plan 钉死的裁定）。这与
- * path-guard"不做 JS 层大小写折叠"的原则是**有意分歧**：白名单前缀比较的两侧
- * 都是同会话新鲜 realpath（盘上真实形态，逐字符比较即可），而本表跨会话存活
- * ——登记时的盘上形态无法在查询时用原生 realpath 重放求证（目录改名、8.3 名
- * 生成策略都可能漂移），win32 文件系统大小写不敏感是 OS 语义，此处折叠后才与
- * OS 一致；折叠可能制造的误红（同形异码影子）落在 T2 红卡方向——fail-safe。
+ * ——不另造第二套归一；在此之上，**大小写不敏感 FS 平台（win32 / darwin）整串
+ * 小写**，linux 及其他真大小写敏感平台不折叠。win32 折叠是 plan 钉死的裁定
+ * （"归一后小写比较 win32"）；darwin 折叠是 review 裁定——macOS 默认 APFS
+ * 大小写不敏感（仅保留大小写），posix 分支若保持敏感，登记 `/Users/x/Tool.js`
+ * 后以 `tool.js` 执行即漏判（T2 红卡被跳过）。这与 path-guard"不做 JS 层大小
+ * 写折叠"的原则是**有意分歧**：白名单前缀比较的两侧都是同会话新鲜 realpath
+ * （盘上真实形态，逐字符比较即可），而本表跨会话存活——登记时的盘上形态无法
+ * 在查询时用原生 realpath 重放求证（目录改名、8.3 名生成策略都可能漂移），折
+ * 叠后才与本平台 FS 默认大小写语义一致；折叠可能制造的误红（同形异码影子）
+ * 落在 T2 红卡方向——fail-safe。
  *
  * 构造对存量文件的三态处置（fail-closed 谱系）：
  *  - 文件不存在（ENOENT）→ 空表（首启，正常态）；
@@ -43,12 +47,16 @@ interface ProvenanceFile {
   entries: ProvenanceEntry[];
 }
 
-const WIN32 = process.platform === 'win32';
+/** 大小写不敏感 FS 平台：win32（NTFS 默认）与 darwin（APFS 默认——不敏感但
+ * 保留大小写）。linux 及其他 posix 默认真敏感，不折叠。 */
+const CASE_INSENSITIVE_FS =
+  process.platform === 'win32' || process.platform === 'darwin';
 
-/** 登记键：comparableForm（复用 T6 口径）之上 win32 整串小写（见文件头裁定）。 */
+/** 登记键：comparableForm（复用 T6 口径）之上，大小写不敏感 FS 平台整串小写
+ * （见文件头裁定）。 */
 function storageKey(realPath: string): string {
   const c = comparableForm(realPath);
-  return WIN32 ? c.toLowerCase() : c;
+  return CASE_INSENSITIVE_FS ? c.toLowerCase() : c;
 }
 
 function isEntryShape(v: unknown): v is ProvenanceEntry {
@@ -120,7 +128,9 @@ export class ProvenanceStore {
     }
   }
 
-  /** 登记 driver-authored 路径 + 内容哈希（同步落盘；同路径覆盖）。 */
+  /** 登记 driver-authored 路径 + 内容哈希（同步落盘；同路径覆盖）。
+   * 落盘失败不对称：flush 抛错时内存已登记——本会话内判红仍生效（fail-safe
+   * 方向），重启即失（盘上没有）；故 record 抛错 ≠ 未登记。 */
   record(realPath: string, hash: string): void {
     if (!path.isAbsolute(realPath)) {
       throw new TypeError(

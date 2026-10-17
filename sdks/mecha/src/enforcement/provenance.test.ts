@@ -68,21 +68,26 @@ describe('ProvenanceStore（溯源持久表）', () => {
     expect(reopened.isDriverAuthored(target)).toBe(true);
   });
 
-  it('win32 大小写/分隔符变体为真；posix 大小写变体为假（平台语义分叉）', () => {
+  it('大小写不敏感 FS 平台（win32/darwin）大小写变体为真；linux 变体为假', () => {
     const ws = makeWorkspace();
     const store = new ProvenanceStore(join(ws, 'provenance.json'));
     const target = join(ws, 'Scripts', 'Tool.JS'); // 无需真实存在：store 零 fs 判定
     store.record(target, 'hash-2');
 
-    if (process.platform === 'win32') {
-      // win32 FS 大小写不敏感：变体是同一文件，必须照样判红（宁可误红不可漏红）
+    // 各平台钉自己的真值：win32（NTFS 默认）与 darwin（APFS 默认——不敏感但
+    // 保留大小写）上变体是同一文件，必须照样判红（宁可误红不可漏红——darwin
+    // 若按敏感处理，登记 Tool.js 后以 tool.js 执行即漏红）；linux 默认真敏感，
+    // 变体是不同文件，不得误红。
+    if (process.platform === 'win32' || process.platform === 'darwin') {
       expect(store.isDriverAuthored(flipCase(target))).toBe(true);
-      // 分隔符归一（comparableForm 口径）：正斜杠形式同样命中
-      expect(store.isDriverAuthored(target.replace(/\\/g, '/'))).toBe(true);
     } else {
-      // posix 大小写敏感 FS：变体是不同文件——不得误红；原样路径命中
       expect(store.isDriverAuthored(flipCase(target))).toBe(false);
-      expect(store.isDriverAuthored(target)).toBe(true);
+    }
+    expect(store.isDriverAuthored(target)).toBe(true); // 原样路径各平台都命中
+
+    if (process.platform === 'win32') {
+      // 分隔符归一（comparableForm 口径，仅 win32）：正斜杠形式同样命中
+      expect(store.isDriverAuthored(target.replace(/\\/g, '/'))).toBe(true);
     }
   });
 
