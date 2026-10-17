@@ -1,12 +1,22 @@
 import { defineConfig } from 'tsup';
 
-// v0 脚手架：只构建库入口 src/index.ts（版本常量 + 布局函数）。
-// CLI 入口 src/cli/index.ts 由后续任务落地，届时仿照 sdks/cli 追加
-// 带 `#!/usr/bin/env node` banner 的 bin 构建段（bin 指向 dist/cli/index.js）。
-export default defineConfig({
-  entry: ['src/index.ts'],
-  format: ['esm'],
-  dts: true,
-  clean: true,
-  sourcemap: true,
-});
+export default defineConfig([
+  {
+    // 库入口（版本常量 + 布局 + IPC/会话/执行器等可编程面）。
+    entry: ['src/index.ts'],
+    format: ['esm'],
+    dts: true,
+    clean: true,
+    sourcemap: true,
+  },
+  {
+    // CLI bin：package.json bin `mecha` → dist/cli/index.js（Task 15 落地，
+    // 仿 sdks/cli 追加 shebang banner；clean:false 不清掉上面的库构建产物）。
+    // entry 用对象形态钉死输出路径（单文件数组入口会被 tsup 拍平成 dist/index.js）。
+    entry: { 'cli/index': 'src/cli/index.ts' },
+    format: ['esm'],
+    banner: { js: '#!/usr/bin/env node' },
+    clean: false,
+    sourcemap: true,
+  },
+]);

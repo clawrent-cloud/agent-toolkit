@@ -9,3 +9,4 @@ export * from './ops/executor.js';
 export * from './logging.js';
 export * from './session.js';
 export * from './device-client.js';
+export * from './ipc.js';
