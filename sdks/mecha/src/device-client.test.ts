@@ -62,6 +62,9 @@ interface Stack {
 async function makeStack(opts?: {
   /** 心跳间隔覆盖（默认 30s——短测试窗口内永不触发）。 */
   heartbeatMs?: number;
+  /** 确认挂起模式：confirm 回调发 confirmRequest 上行后挂起，由
+   * wire.confirmResult 的下行批复解锁（T16 确认回路的接线雏形）。 */
+  holdConfirm?: boolean;
 }): Promise<Stack> {
   const ws = makeWorkspace('mecha-dc-');
   const policy: Mecha.MechaPolicy = {
@@ -69,9 +72,24 @@ async function makeStack(opts?: {
     programs: [],
     limits: { ...Mecha.MECHA_LIMITS_DEFAULTS },
   };
+  /** holdConfirm 模式的挂起确认（requestId → 解锁器）。 */
+  const heldConfirms = new Map<string, (r: Mecha.MechaConfirmResult) => void>();
   const session = new MechaSession({
     provenance: new ProvenanceStore(join(ws, 'provenance.json')),
-    confirm: async (req) => ({ requestId: req.requestId, approved: true }),
+    confirm: (req) => {
+      if (opts?.holdConfirm === true) {
+        client.send({
+          requestId: req.requestId,
+          opId: req.opId,
+          tier: req.tier,
+          summary: req.summary,
+        });
+        return new Promise((resolve) => {
+          heldConfirms.set(req.requestId, resolve);
+        });
+      }
+      return Promise.resolve({ requestId: req.requestId, approved: true });
+    },
     log: { logOp: () => {} },
   });
   const attached: Mecha.CapabilityManifest[] = [];
@@ -119,6 +137,9 @@ async function makeStack(opts?: {
       policyUpdate: route,
       op: (envelope) => {
         void session.executeOp(envelope).then((result) => client.send(result));
+      },
+      confirmResult: (msg) => {
+        heldConfirms.get(msg.requestId)?.(msg);
       },
     },
   });
@@ -255,6 +276,54 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
     expect(entries.map((e) => e.name)).toContain('a.txt');
   });
 
+  it('driver 回 confirmResult → 抵达 wire.confirmResult，pending 确认闭环（approve 放行 / deny 得 CONFIRM_DENIED）', async () => {
+    const stack = await makeStack({ holdConfirm: true });
+    stack.relay.driver.offer(stack.policy, 'sess-1', 'driver-1');
+    await stack.relay.driver.waitFor(() =>
+      stack.relay.frameLog.some(
+        (f) => f.type === 'session.accept' && f.sessionId === 'sess-1',
+      )
+        ? true
+        : undefined,
+    );
+
+    // T1 op（fs.write）：confirm 回调发 confirmRequest 上行后挂起
+    stack.relay.driver.sendOp({
+      opId: 'op-1',
+      sessionId: 'sess-1',
+      op: { type: 'fs.write', path: 'out.txt', content: 'hello', encoding: 'utf8' },
+    });
+    const req1 = await stack.relay.driver.waitFor(() =>
+      stack.confirms.find((c) => c.opId === 'op-1'),
+    );
+    expect(req1.tier).toBe('T1');
+
+    // 下行批复经 R16 形状分流抵达 wire.confirmResult → 挂起确认解锁放行
+    stack.relay.driver.sendDown({ requestId: req1.requestId, approved: true });
+    const r1 = await stack.relay.driver.waitFor(
+      () => stack.opResults.find((r) => r.opId === 'op-1'),
+    );
+    expect(r1.ok).toBe(true);
+    expect(fs.existsSync(join(stack.ws, 'out.txt'))).toBe(true);
+
+    // deny 路径：approved:false → CONFIRM_DENIED（无 confirmEnd 标记的人拒口径）
+    stack.relay.driver.sendOp({
+      opId: 'op-2',
+      sessionId: 'sess-1',
+      op: { type: 'fs.write', path: 'no.txt', content: 'x', encoding: 'utf8' },
+    });
+    const req2 = await stack.relay.driver.waitFor(() =>
+      stack.confirms.find((c) => c.opId === 'op-2'),
+    );
+    stack.relay.driver.sendDown({ requestId: req2.requestId, approved: false });
+    const r2 = await stack.relay.driver.waitFor(
+      () => stack.opResults.find((r) => r.opId === 'op-2'),
+    );
+    expect(r2.ok).toBe(false);
+    expect(r2.error?.code).toBe(Mecha.MECHA_ERROR_CODES[2]); // CONFIRM_DENIED
+    expect(fs.existsSync(join(stack.ws, 'no.txt'))).toBe(false);
+  }, 15_000);
+
   it('坏下行帧 → client 回 error 帧并忽略（不炸链路）', async () => {
     const stack = await makeStack();
     stack.relay.driver.sendDown({ type: 'session.rename', sessionId: 'x' }); // 未知 type
@@ -331,6 +400,7 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
         end: () => {},
         policyUpdate: () => {},
         op: () => {},
+        confirmResult: () => {},
       },
     });
     try {
@@ -370,6 +440,7 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
         end: () => {},
         policyUpdate: () => {},
         op: () => {},
+        confirmResult: () => {},
       },
     });
     try {

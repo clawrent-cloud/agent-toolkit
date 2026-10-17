@@ -22,9 +22,11 @@ import type {
  *  3. 收发分流（Ruling R16，binding）：设备通道同载两族消息——
  *     - MechaDeviceFrame（JSON 带 `type` 判别）；
  *     - mecha op 信封（`opId`+`op` 字段的对象）。
- *     按**形状**分流：`'op' in msg` → op 信封 → wire.op；否则按
- *     MechaDeviceFrameSchema 解析分派到对应 wire 回调。解析失败/不可解析
- *     → 回 `error` 帧并忽略（绝不炸链路）；
+ *     按**形状**分流三族：`'op' in msg && 'opId' in msg` → op 信封 →
+ *     wire.op；`'requestId' in msg && 'approved' in msg` → 确认批复 →
+ *     wire.confirmResult；否则按 MechaDeviceFrameSchema 解析分派到对应
+ *     wire 回调。形状命中但 schema 不过 / 全不命中 / 不可解析 → 回
+ *     `error` 帧并忽略（绝不炸链路）；
  *  4. 断链与重连：任何 close/error → onLinkChange(false)（仅状态翻转时
  *     通知）→ 指数退避重连（1s, 2s, 4s… 封顶 30s；backoffMs 可注入覆盖，
  *     测试用）→ 永久重试直至 close()。重连成功（welcome 再次到手）→
@@ -45,6 +47,9 @@ export interface DeviceClientWire {
   end(frame: MechaSessionEndFrame): void;
   policyUpdate(frame: MechaPolicyUpdateFrame): void;
   op(envelope: Mecha.MechaOpEnvelope): void;
+  /** 驾驶员对 mecha.confirmRequest 的批复下行（R16 确认回路闭环——缺此
+   * 回调 confirmRequest 发出后永远无答）。 */
+  confirmResult(msg: Mecha.MechaConfirmResult): void;
 }
 
 /** 设备通道上行载荷（R16 同通道双族）：设备帧（hello/heartbeat/accept/
@@ -55,6 +60,14 @@ export type MechaUplinkMessage =
   | Mecha.MechaOpResult
   | Mecha.MechaExecChunk
   | Mecha.MechaConfirmRequest;
+
+/** 设备通道下行载荷（R16 同通道双族 + 确认批复）：设备帧、op 信封、驾驶员
+ * 对确认请求的批复。收包分流的三族形状（client 内部按形状判别后走各自的
+ * schema 解析）。 */
+export type MechaDownlinkMessage =
+  | Mecha.MechaDeviceFrame
+  | Mecha.MechaOpEnvelope
+  | Mecha.MechaConfirmResult;
 
 export interface DeviceClientOpts {
   /** 平台设备通道 ws 地址（出站单向，client 只连不监听）。 */
@@ -252,19 +265,36 @@ export class DeviceClient {
       return;
     }
 
-    // 形状分流：op 信封（'op' 字段在）优先于设备帧（'type' 判别）——R16。
-    if (typeof msg === 'object' && msg !== null && 'op' in msg) {
-      const parsed = Mecha.MechaOpEnvelopeSchema.safeParse(msg);
-      if (!parsed.success) {
-        this.sendRaw({
-          type: 'error',
-          code: 'bad_frame',
-          message: 'invalid op envelope',
-        });
+    // 形状分流（R16）：op 信封（'op'+'opId'）与确认批复（'requestId'+
+    // 'approved'）优先于设备帧（'type' 判别）——设备帧不带这几类键，判别
+    // 互斥。
+    if (typeof msg === 'object' && msg !== null) {
+      if ('op' in msg && 'opId' in msg) {
+        const parsed = Mecha.MechaOpEnvelopeSchema.safeParse(msg);
+        if (!parsed.success) {
+          this.sendRaw({
+            type: 'error',
+            code: 'bad_frame',
+            message: 'invalid op envelope',
+          });
+          return;
+        }
+        this.safeWire(() => this.wire.op(parsed.data));
         return;
       }
-      this.safeWire(() => this.wire.op(parsed.data));
-      return;
+      if ('requestId' in msg && 'approved' in msg) {
+        const parsed = Mecha.MechaConfirmResultSchema.safeParse(msg);
+        if (!parsed.success) {
+          this.sendRaw({
+            type: 'error',
+            code: 'bad_frame',
+            message: 'invalid confirm result',
+          });
+          return;
+        }
+        this.safeWire(() => this.wire.confirmResult(parsed.data));
+        return;
+      }
     }
 
     const parsed = Mecha.MechaDeviceFrameSchema.safeParse(msg);
