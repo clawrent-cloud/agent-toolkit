@@ -62,6 +62,8 @@ interface Stack {
 async function makeStack(opts?: {
   /** 心跳间隔覆盖（默认 30s——短测试窗口内永不触发）。 */
   heartbeatMs?: number;
+  /** 设备令牌注入（T17：随 device.hello 上行；缺省不发 token 字段）。 */
+  token?: string;
   /** 确认挂起模式：confirm 回调发 confirmRequest 上行后挂起，由
    * wire.confirmResult 的下行批复解锁（T16 确认回路的接线雏形）。 */
   holdConfirm?: boolean;
@@ -122,6 +124,7 @@ async function makeStack(opts?: {
     deviceId: 'mecha-test-001',
     mechaVersion: MECHA_PACKAGE_VERSION,
     ...(opts?.heartbeatMs !== undefined ? { heartbeatMs: opts.heartbeatMs } : {}),
+    ...(opts?.token !== undefined ? { token: opts.token } : {}),
     backoffMs: () => 50,
     onLinkChange: (up) => {
       linkEvents.push(up);
@@ -227,6 +230,18 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
       type: 'device.hello',
       deviceId: 'mecha-test-001',
       mechaVersion: MECHA_PACKAGE_VERSION,
+    });
+  });
+
+  it('opts.token 注入 → hello 帧携带 token(T17 设备鉴权上行)', async () => {
+    const stack = await makeStack({ token: 'devtok-test-001' });
+    expect(stack.linkEvents).toEqual([true]);
+    const hello = stack.relay.frameLog.find((f) => f.type === 'device.hello');
+    expect(hello).toEqual({
+      type: 'device.hello',
+      deviceId: 'mecha-test-001',
+      mechaVersion: MECHA_PACKAGE_VERSION,
+      token: 'devtok-test-001',
     });
   });
 

@@ -89,6 +89,30 @@ function collectInbound(relay: MockRelay): DriverInbox {
 // ── 用例 ───────────────────────────────────────────────────────────────────
 
 describe('startDaemon × mock relay（真 ws 全链总装）', () => {
+  it('config.deviceToken 随 device.hello 上行（T17 设备鉴权接线）', async () => {
+    const home = makeHome('d17tok');
+    const relay = await startMockRelay(0);
+    relays.push(relay);
+
+    const daemon = await startDaemon({
+      configPath: join(home, 'config.json'),
+      relayUrl: relay.url,
+      homeOverride: home,
+    });
+    daemons.push(daemon);
+
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some((f) => f.type === 'device.hello') ? true : undefined,
+    );
+    const hello = relay.frameLog.find((f) => f.type === 'device.hello');
+    expect(hello).toEqual({
+      type: 'device.hello',
+      deviceId: 'mecha-d17tok',
+      mechaVersion: MECHA_PACKAGE_VERSION,
+      token: 'tok-d17tok',
+    });
+  });
+
   it('全链：offer → attach → fs.write 经确认批复 → opResult ok → session.end → 焚 scratch、交付物在、日志完整', async () => {
     const home = makeHome('d16a');
     const deliver = fs.mkdtempSync(join(tmpdir(), 'mecha-d16-deliver-'));

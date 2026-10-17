@@ -23,8 +23,9 @@ import { ProvenanceStore } from './enforcement/provenance.js';
  *
  *  1. 配置装载：读 config.json（T18 setup 落盘的 deviceId/deviceToken/
  *     apiBase/profile 四字段）。缺文件/坏形状一律响亮拒绝（「请先运行
- *     mecha setup」）——守护进程不带病空转。deviceToken v0 暂不随
- *     device.hello 上行（协议帧无鉴权字段，T17/平台侧后续契约），先持有。
+ *     mecha setup」）——守护进程不带病空转。deviceToken（T17 device flow
+ *     取得）经 DeviceClient 随 `device.hello` 上行（协议帧 token 为
+ *     optional additive 字段，平台侧鉴权消费见 spec §7.7）。
  *  2. 部件装配（每 daemon 恰一套，R6 单例裁定）：ProvenanceStore ONE per
  *     daemon（跨会话判红的红链是安全资产，即焚不清）；DashcamLogger
  *     （logs/ 目录自建）；DeviceClient（设备通道 ws，relayUrl 覆盖或按
@@ -63,7 +64,7 @@ import { ProvenanceStore } from './enforcement/provenance.js';
 /** 守护进程配置（config.json 形状 = T18 setup 落盘契约）。 */
 export interface MechaDaemonConfig {
   deviceId: string;
-  /** 设备令牌（T17 device flow 取得）。v0 wire 无鉴权字段，持有待用。 */
+  /** 设备令牌（T17 device flow 取得），随 device.hello 上行（设备鉴权）。 */
   deviceToken: string;
   /** 平台 API base（relayUrl 缺省时按 deriveRelayUrl 换算设备通道地址）。 */
   apiBase: string;
@@ -290,6 +291,7 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     url: relayUrl,
     deviceId: config.deviceId,
     mechaVersion: MECHA_PACKAGE_VERSION,
+    token: config.deviceToken, // 设备鉴权（T17）：随 device.hello 上行
     wire: {
       offer: (frame: MechaSessionOfferFrame) => {
         const decision = session.offer(frame); // accept 路径同步 emit 'attached'

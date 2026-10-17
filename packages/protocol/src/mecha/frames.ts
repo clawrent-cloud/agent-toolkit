@@ -35,11 +35,13 @@ export type MechaPolicyUpdateDirection = (typeof MECHA_POLICY_UPDATE_DIRECTIONS)
 
 // ── 上行帧（设备 → 平台）──────────────────────────────────────────────────
 
-/** 设备 → 平台:连接问候。 */
+/** 设备 → 平台:连接问候。token = 设备令牌（T17 device flow 取得）——
+ * optional 保持 additive 兼容（旧设备 / 不带鉴权的测试替身不发仍合法）。 */
 const DeviceHelloFrameSchema = z.object({
   type: z.literal('device.hello'),
   deviceId: z.string(),
   mechaVersion: z.string(),
+  token: z.string().min(1).optional(),
 });
 
 /** 设备 → 平台:心跳(间隔以 policy.limits.heartbeatMs 为准)。 */

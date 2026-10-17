@@ -13,7 +13,8 @@ import type {
  * WebSocket 的哑管道。只连不监听（出站单向）、不拥有会话——session 逻辑
  * 全归 Task 12 状态机 / Task 16 daemon，本类只负责：
  *
- *  1. 连接握手：open → 发 `device.hello`{deviceId, mechaVersion} → 等
+ *  1. 连接握手：open → 发 `device.hello`{deviceId, mechaVersion, token?}
+ *     （token 为 T17 设备令牌，注入才携带）→ 等
  *     `device.welcome`（默认 10s 超时 → 本次 connect() 失败；链路由后台
  *     重连继续接管）→ connect() 兑现；
  *  2. 心跳：每 heartbeatMs（默认 spec §11 的 30s）发 `heartbeat`，服务端
@@ -74,6 +75,9 @@ export interface DeviceClientOpts {
   url: string;
   deviceId: string;
   mechaVersion: string;
+  /** 设备令牌（T17 device flow 取得，daemon 从 config.deviceToken 传入）。
+   * 提供时随 `device.hello` 上行；缺省 hello 不带 token 字段（additive 兼容）。 */
+  token?: string;
   wire: DeviceClientWire;
   /** 链路状态翻转回调（false→true / true→false 才通知；初始即断不通知）。 */
   onLinkChange?: (up: boolean) => void;
@@ -97,6 +101,7 @@ export class DeviceClient {
   private readonly url: string;
   private readonly deviceId: string;
   private readonly mechaVersion: string;
+  private readonly token: string | undefined;
   private readonly wire: DeviceClientWire;
   private readonly onLinkChangeCb: ((up: boolean) => void) | undefined;
   private readonly backoffMsFn: ((attempt: number) => number) | undefined;
@@ -131,6 +136,7 @@ export class DeviceClient {
     this.url = opts.url;
     this.deviceId = opts.deviceId;
     this.mechaVersion = opts.mechaVersion;
+    this.token = opts.token;
     this.wire = opts.wire;
     this.onLinkChangeCb = opts.onLinkChange;
     this.backoffMsFn = opts.backoffMs;
@@ -235,6 +241,9 @@ export class DeviceClient {
           type: 'device.hello',
           deviceId: this.deviceId,
           mechaVersion: this.mechaVersion,
+          // 设备鉴权（T17）：有令牌才带字段——协议帧 token optional，
+          // 缺省不发，mock relay 等不带鉴权的测试替身不受影响。
+          ...(this.token !== undefined ? { token: this.token } : {}),
         });
         welcomeTimer = setTimeout(() => {
           finish(new Error('DeviceClient: device.welcome timeout'));

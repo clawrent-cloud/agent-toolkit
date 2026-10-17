@@ -56,6 +56,39 @@ describe('mecha device frames (MechaDeviceFrameSchema)', () => {
     }
   });
 
+  it('device.hello 带 token 解析通过且 round-trip 保形;无 token 仍解析通过(T17 additive 兼容)', () => {
+    const withToken = {
+      type: 'device.hello',
+      deviceId: 'mecha-002',
+      mechaVersion: '0.1.0',
+      token: 'devtok-abc123',
+    };
+    const result = MechaDeviceFrameSchema.safeParse(withToken);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual(withToken);
+    }
+    // 无 token 仍合法（旧设备 / 不带鉴权的 mock relay 测试不受影响）
+    expect(
+      MechaDeviceFrameSchema.safeParse({
+        type: 'device.hello',
+        deviceId: 'mecha-002',
+        mechaVersion: '0.1.0',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('device.hello token 空串拒绝(min(1)——有 token 字段就必须非空)', () => {
+    expect(
+      MechaDeviceFrameSchema.safeParse({
+        type: 'device.hello',
+        deviceId: 'mecha-002',
+        mechaVersion: '0.1.0',
+        token: '',
+      }).success,
+    ).toBe(false);
+  });
+
   it('未知帧 type 拒绝', () => {
     expect(
       MechaDeviceFrameSchema.safeParse({ type: 'session.rename', sessionId: 'x' }).success,
