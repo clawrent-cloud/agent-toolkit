@@ -102,12 +102,15 @@ export interface ExecutorLogger {
  *  - `confirmEnd: 'timeout'`   → CONFIRM_TIMEOUT（等待人工批准超时，默认拒）；
  *  - `confirmEnd: 'link_down'` → IO_ERROR 'link down'（链路已断/会话已终，
  *    非人拒也不是超时——宁杀勿失控口径）；
+ *  - `confirmEnd: 'ended'`     → 同 link_down 口径（会话终局收割的确认取消；
+ *    session 实际发给 executor 的结算恒为 link_down——本值仅出现在审计结算
+ *    载荷（T16 fix 通知面），此分支为直接调用方的防御性归一）；
  *  - 无标记的 approved:false    → CONFIRM_DENIED（驾驶员主动拒绝，原口径，
  *    向后兼容 Task 10/11 既有调用方与测试）。
  * plain MechaConfirmResult 结构满足本接口（confirmEnd 可选）。
  */
 export interface MechaConfirmSettlement extends Mecha.MechaConfirmResult {
-  confirmEnd?: 'timeout' | 'link_down';
+  confirmEnd?: 'timeout' | 'link_down' | 'ended';
 }
 
 /** executor 依赖注入（R1 裁定：scratchDir 构造参数，Task 12 session 接线）。 */
@@ -530,7 +533,8 @@ export class MechaExecutor {
         tier,
       );
     }
-    if (decision.confirmEnd === 'link_down') {
+    // 'ended'（终局收割）与 link_down 同口径：会话已不在，确认取消非人拒
+    if (decision.confirmEnd === 'link_down' || decision.confirmEnd === 'ended') {
       return fail(envelope.opId, IO_ERROR, 'link down', tier);
     }
     return fail(envelope.opId, CONFIRM_DENIED, '驾驶员拒绝执行该操作', tier);

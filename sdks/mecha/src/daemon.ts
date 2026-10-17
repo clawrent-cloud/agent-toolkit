@@ -7,10 +7,12 @@ import { DashcamLogger } from './logging.js';
 import { IpcServer, safeIpcName } from './ipc.js';
 import {
   MechaSession,
+  type MechaConfirmSettlementOutcome,
   type MechaPolicyUpdateFrame,
   type MechaSessionEndEvent,
   type MechaSessionOfferFrame,
 } from './session.js';
+import type { MechaConfirmSettlement } from './ops/executor.js';
 import { ProvenanceStore } from './enforcement/provenance.js';
 
 /**
@@ -37,7 +39,10 @@ import { ProvenanceStore } from './enforcement/provenance.js';
  *  4. 确认回路（daemon 只桥接）：session 的原始 confirm 回调把
  *     `mecha.confirmRequest` 上行并挂起等 wire.confirmResult 的下行批复——
  *     超时默认拒（300s）/断链收割语义内建在 session 包装层（T12），daemon
- *     不重实现。批复落地前先入审计（logConfirm 成对入档）。
+ *     不重实现。结算与审计一对一归真（T16 fix）：司机批复落地 →
+ *     logConfirm(批复)；会话先收割（timeout/link_down/ended 的
+ *     onConfirmSettled 通知）→ logConfirm(真实结算)；两路都以「摘表项」为
+ *     第一动作——迟到的批复扑空即静默，绝不写出与事实不符的第二笔账。
  *  5. 链路事件 → 失电保护：onLinkChange(false) → markLinkDown（杀 exec +
  *     收割确认 + 宽限计时）+ 'link_down' 落账；onLinkChange(true) →
  *     markLinkUp 的 'resumed' | 'grace_expired' 裁决落账。
@@ -81,6 +86,34 @@ export interface StartDaemonOpts {
 export interface DaemonHandle {
   /** 优雅停机（幂等）：在会终局（'platform'）→ 断设备通道 → 关 IPC。 */
   stop(): Promise<void>;
+}
+
+/** 确认回路的桥接表项（T16 fix）：req 复记供会话收割时补写真实结算对。 */
+interface PendingConfirmBridge {
+  req: Mecha.MechaConfirmRequest;
+  resolve: (result: Mecha.MechaConfirmResult) => void;
+}
+
+/** 会话侧收割的真实结算（T16 fix）：审计对与本地 promise 兜底值的单一来源
+ * ——confirmEnd 与 session 实际裁定一致（timeout/link_down/ended），迟到
+ * 批复到达时表项已摘、此值不再被任何执行面消费。 */
+function harvestedSettlement(
+  requestId: string,
+  outcome: MechaConfirmSettlementOutcome,
+): MechaConfirmSettlement {
+  switch (outcome) {
+    case 'timeout':
+      return { requestId, approved: false, confirmEnd: 'timeout' };
+    case 'link_down':
+      return { requestId, approved: false, confirmEnd: 'link_down' };
+    case 'ended':
+      return { requestId, approved: false, confirmEnd: 'ended' };
+    case 'approved':
+    case 'denied':
+      // 司机批复在时效内落地时表项已由 confirmResult 先摘，此二值不可达
+      // ——防御性兜底（口径与批复一致）。
+      return { requestId, approved: outcome === 'approved' };
+  }
 }
 
 function errMsg(err: unknown): string {
@@ -133,10 +166,19 @@ export function loadDaemonConfig(configPath: string): MechaDaemonConfig {
       );
     }
   }
+  // apiBase 协议门（T16 fix Minor）：非 http(s) 的 apiBase 经 deriveRelayUrl
+  // 会产出非法 ws 地址——DeviceClient 首拨同步抛错、重连链就此死亡（一次
+  // warn 后静默空转）。开机即响亮拒绝，不带病启动。
+  const apiBase = rec['apiBase'] as string;
+  if (!/^https?:\/\//i.test(apiBase)) {
+    throw new Error(
+      `机甲配置 apiBase 须为 http(s):// 地址（收到 ${JSON.stringify(apiBase)}）：请先运行 mecha setup`,
+    );
+  }
   return {
     deviceId: rec['deviceId'] as string,
     deviceToken: rec['deviceToken'] as string,
-    apiBase: rec['apiBase'] as string,
+    apiBase,
     profile: rec['profile'] as string,
   };
 }
@@ -175,12 +217,11 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   let activeOp: string | null = null;
   let since = Date.now();
 
-  /** 确认回路桥（requestId → 司机批复的兑现器）。断链/终局清场——迟到的
-   * 批复绝不解锁已收割的确认（收割语义在 session 包装层，T12）。 */
-  const pendingConfirms = new Map<
-    string,
-    (result: Mecha.MechaConfirmResult) => void
-  >();
+  /** 确认回路桥（requestId → 桥接表项）。表项存在 = 司机批复未落地：
+   * 会话侧收割（onConfirmSettled）与司机批复（confirmResult）双方都以
+   * 「摘表项」为第一动作——后到者扑空即静默忽略（T16 fix：迟到批复绝不
+   * 写出与事实不符的第二笔账）。 */
+  const pendingConfirms = new Map<string, PendingConfirmBridge>();
 
   /** 生命周期落账闸（T13 约束）：无在会话一律跳过——logger 的落「当前会话」
    * 面对空会话是响亮抛错（审计优先），daemon 以闸位表达「无会话即无账可落」，
@@ -194,14 +235,12 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   const session = new MechaSession({
     provenance,
     // 确认回路（daemon 只桥接）：request 上行 → 挂等下行批复。超时默认拒 /
-    // 断链收割内建在 session 包装层——此处不重实现。批复落地先入审计
-    // （request + result 同行成对，「人批了什么」的落盘证据）。
+    // 断链收割内建在 session 包装层——此处不重实现。审计一对一归真：司机
+    // 批复由 confirmResult 入档；会话先收割（超时/断链/终局）由
+    // onConfirmSettled 补记真实结算对——两路互斥（摘表项竞先，后到扑空）。
     confirm: (req) =>
       new Promise<Mecha.MechaConfirmResult>((resolve) => {
-        pendingConfirms.set(req.requestId, (result) => {
-          logger.logConfirm(req, result);
-          resolve(result);
-        });
+        pendingConfirms.set(req.requestId, { req, resolve });
         client.send(req); // mecha.confirmRequest 上行（生产由平台转发消费者网页）
       }),
     log: logger, // DashcamLogger 结构满足 ExecutorLogger（logOp 每 op 恰一次）
@@ -210,6 +249,16 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
       // T13 约束：仅会话在位时落账——session 的该回调在 idle 拒绝时也会触发
       //（「全量记账」），而空会话落账会让 logger 抛。
       if (currentSessionId !== null) logger.logPolicyUpdate(frame, applied);
+    },
+    onConfirmSettled: (requestId, outcome) => {
+      const entry = pendingConfirms.get(requestId);
+      if (entry === undefined) return; // 司机批复已落地并如实入档——无残账
+      pendingConfirms.delete(requestId);
+      // 真实结算对入档（确认超时/断链/终局的审计真相——司机批复未到，
+      // 此通知即结算事实的唯一来源）
+      logger.logConfirm(entry.req, harvestedSettlement(requestId, outcome));
+      // 本地 promise 收口（race 已被 session 结算，兜底值被执行侧丢弃——桥不悬挂）
+      entry.resolve({ requestId, approved: false });
     },
   });
 
@@ -229,8 +278,16 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   });
 
   // ── 设备通道（出站单向 ws，client 只连不监听）────────────────────────────
+  const relayUrl = opts.relayUrl ?? deriveRelayUrl(config.apiBase);
+  // 最终地址协议门（T16 fix Minor）：relayUrl 覆盖与 apiBase 换算共用同一
+  // 闸——非 ws(s) 地址会让首拨同步抛错、重连链死亡（一次 warn 后静默空转）。
+  if (!/^wss?:\/\//i.test(relayUrl)) {
+    throw new Error(
+      `机甲设备通道地址须为 ws(s):// 地址（收到 ${JSON.stringify(relayUrl)}）`,
+    );
+  }
   const client = new DeviceClient({
-    url: opts.relayUrl ?? deriveRelayUrl(config.apiBase),
+    url: relayUrl,
     deviceId: config.deviceId,
     mechaVersion: MECHA_PACKAGE_VERSION,
     wire: {
@@ -294,10 +351,11 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
         });
       },
       confirmResult: (msg) => {
-        const settle = pendingConfirms.get(msg.requestId);
-        if (settle === undefined) return; // 迟到/未知批复（已被超时/断链收割）——忽略
+        const entry = pendingConfirms.get(msg.requestId);
+        if (entry === undefined) return; // 迟到/未知批复（已被会话收割）——忽略
         pendingConfirms.delete(msg.requestId);
-        settle(msg);
+        logger.logConfirm(entry.req, msg); // 司机批复成对入档（人批/人拒）
+        entry.resolve(msg);
       },
     },
     onLinkChange: (up) => {

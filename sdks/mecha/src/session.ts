@@ -107,6 +107,17 @@ export interface MechaSessionEndEvent {
   burnError?: string;
 }
 
+/** 确认结算的终局口径（onConfirmSettled 通知载荷）：approved/denied = 司机
+ * 批复在时效内落地；timeout = 人工批准超时默认拒（会话收割）；link_down =
+ * 断链失电收割；ended = 会话终局收割。executor 面的结算对象口径不变
+ * （取消类恒 confirmEnd:'link_down'），本细分只走通知面供审计归真。 */
+export type MechaConfirmSettlementOutcome =
+  | 'approved'
+  | 'denied'
+  | 'timeout'
+  | 'link_down'
+  | 'ended';
+
 /** 事件表（监听器故障吞掉——行车记录/计费侧的坏回调绝不炸状态机）。 */
 export interface MechaSessionEvents {
   attached: Mecha.CapabilityManifest;
@@ -127,13 +138,27 @@ export interface MechaSessionDeps {
   onChunk?: (chunk: Mecha.MechaExecChunk) => void;
   /** policy.update 处置回调（applied 含被拒的更新——T13/T16 接线记账）。 */
   onPolicyUpdate?: (frame: MechaPolicyUpdateFrame, applied: boolean) => void;
+  /** 确认结算通知（T16 fix 裁定）：每一条结算路径（approved/denied/timeout/
+   * link_down/ended）在 wrappedConfirm 的 finish() 处恰通知一次——下游桥接
+   * （T16 daemon）据此摘除等待表项，并为「会话先收割、司机批复后到」的
+   * 情形补记真实结算对（批复未到 = 无结算可自记，通知即结算真相的唯一
+   * 来源）。原始 confirm 回调自身抛错（通道故障）不通知——发起方即结算
+   * 属主，无外溢面。 */
+  onConfirmSettled?: (
+    requestId: string,
+    outcome: MechaConfirmSettlementOutcome,
+  ) => void;
 }
 
-/** 等待中的确认（cancelPendingConfirms 的收割句柄）。 */
+/** 等待中的确认（cancelPendingConfirms 的收割句柄）。settle 携带通知口径
+ * （cancelPendingConfirms 的调用方区分断链失电/会话终局）。 */
 interface PendingConfirm {
   requestId: string;
   timer: NodeJS.Timeout;
-  settle: (result: MechaConfirmSettlement) => void;
+  settle: (
+    result: MechaConfirmSettlement,
+    outcome: MechaConfirmSettlementOutcome,
+  ) => void;
 }
 
 /** 会话空闲兜底策略（fail-closed：空白名单 = fs 全拒；executor 每会话在位
@@ -339,7 +364,7 @@ export class MechaSession {
     if (this.stateValue === 'idle' || this.linkDown) return;
     this.linkDown = true;
     this.executor?.killActiveExec();
-    this.cancelPendingConfirms();
+    this.cancelPendingConfirms('link_down');
     const graceMs =
       this.activePolicy?.limits.disconnectGraceMs ??
       Mecha.MECHA_LIMITS_DEFAULTS.disconnectGraceMs;
@@ -377,7 +402,7 @@ export class MechaSession {
     if (this.stateValue === 'idle') return; // 终局只发生一次
     // 失电优先：杀运行中 exec（幂等，宁杀勿失控）
     this.executor?.killActiveExec();
-    this.cancelPendingConfirms();
+    this.cancelPendingConfirms('ended');
     if (this.graceTimer !== null) {
       clearTimeout(this.graceTimer);
       this.graceTimer = null;
@@ -549,40 +574,54 @@ export class MechaSession {
     return new Promise<MechaConfirmSettlement>((resolve, reject) => {
       let timer: NodeJS.Timeout | null = null;
       let settled = false;
-      const finish = (settle: () => void): void => {
+      const finish = (
+        outcome: MechaConfirmSettlementOutcome | null,
+        settle: () => void,
+      ): void => {
         if (settled) return;
         settled = true;
         if (timer !== null) clearTimeout(timer); // 结算即清（无悬挂计时器）
         this.pendingConfirms.delete(req.requestId);
+        // 结算通知（T16 fix）：每条会话裁定的结算路径恰通知一次——outcome
+        // 为 null = 原始回调自身抛错（通道故障，发起方即结算属主，不通知）。
+        if (outcome !== null) this.deps.onConfirmSettled?.(req.requestId, outcome);
         settle();
       };
       timer = setTimeout(() => {
-        finish(() =>
+        finish('timeout', () =>
           resolve({ requestId: req.requestId, approved: false, confirmEnd: 'timeout' }),
         );
       }, timeoutMs);
       this.pendingConfirms.set(req.requestId, {
         requestId: req.requestId,
         timer,
-        settle: (result) => finish(() => resolve(result)),
+        settle: (result, outcome) => finish(outcome, () => resolve(result)),
       });
       this.deps.confirm(req).then(
-        (r) => finish(() => resolve({ ...r })),
+        (r) =>
+          finish(r.approved ? 'approved' : 'denied', () => resolve({ ...r })),
         (err) =>
-          finish(() =>
-            reject(err instanceof Error ? err : new Error(String(err))),
+          finish(
+            null,
+            () =>
+              reject(err instanceof Error ? err : new Error(String(err))),
           ),
       );
     });
   }
 
-  /** 收割全部等待中的确认：`approved:false + link_down` 结算 + 清计时器。
+  /** 收割全部等待中的确认：`approved:false + link_down` 结算 + 清计时器 +
+   * 结算通知（outcome 细分断链失电/会话终局——executor 面的结算对象恒
+   * link_down 口径不变，通知面细分供审计归真，T16 fix）。
    * markLinkDown 与 teardown 共用（断链/终局同一失电口径）。 */
-  private cancelPendingConfirms(): void {
+  private cancelPendingConfirms(outcome: 'link_down' | 'ended'): void {
     const pending = [...this.pendingConfirms.values()];
     this.pendingConfirms.clear();
     for (const p of pending) {
-      p.settle({ requestId: p.requestId, approved: false, confirmEnd: 'link_down' });
+      p.settle(
+        { requestId: p.requestId, approved: false, confirmEnd: 'link_down' },
+        outcome,
+      );
     }
   }
 }

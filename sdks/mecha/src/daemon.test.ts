@@ -210,7 +210,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     expect(kinds.indexOf('op')).toBeGreaterThan(kinds.indexOf('confirm'));
   }, 20_000);
 
-  it('config.json 缺失 / 形状非法 → 响亮拒绝（提示请先运行 mecha setup）', async () => {
+  it('config.json 缺失 / 形状非法 / apiBase 协议非法 → 响亮拒绝', async () => {
     const home = makeHome('d16b');
     await expect(
       startDaemon({
@@ -228,7 +228,125 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
         homeOverride: home,
       }),
     ).rejects.toThrow(/deviceToken/);
+
+    // apiBase 协议门（T16 fix Minor）：非 http(s) 一律开机即拒——否则非法
+    // ws 地址让首拨抛错、重连链死亡（一次 warn 后静默空转）
+    const writeConfig = (apiBase: string): void => {
+      fs.writeFileSync(
+        join(home, 'config.json'),
+        JSON.stringify({
+          deviceId: 'x',
+          deviceToken: 't',
+          apiBase,
+          profile: 'd16b',
+        }),
+      );
+    };
+    writeConfig('ftp://api.example.com');
+    await expect(
+      startDaemon({
+        configPath: join(home, 'config.json'),
+        relayUrl: 'ws://127.0.0.1:1',
+        homeOverride: home,
+      }),
+    ).rejects.toThrow(/apiBase/);
+    writeConfig('api.clawrent.cloud'); // 无协议
+    await expect(
+      startDaemon({
+        configPath: join(home, 'config.json'),
+        relayUrl: 'ws://127.0.0.1:1',
+        homeOverride: home,
+      }),
+    ).rejects.toThrow(/apiBase/);
+
+    // relayUrl 覆盖同闸：设备通道地址非 ws(s) 也拒
+    writeConfig('https://api.clawrent.test');
+    await expect(
+      startDaemon({
+        configPath: join(home, 'config.json'),
+        relayUrl: 'ftp://127.0.0.1:1',
+        homeOverride: home,
+      }),
+    ).rejects.toThrow(/ws\(s\)/);
   });
+
+  it('confirm 超时收割审计归真：timeout 结算对入档、迟到批复不写假账、表项摘除', async () => {
+    const home = makeHome('d16f');
+    const deliver = fs.mkdtempSync(join(tmpdir(), 'mecha-d16-timeout-'));
+    created.push(deliver);
+    const relay = await startMockRelay(0);
+    relays.push(relay);
+    const inbox = collectInbound(relay);
+    const daemon = await startDaemon({
+      configPath: join(home, 'config.json'),
+      relayUrl: relay.url,
+      homeOverride: home,
+    });
+    daemons.push(daemon);
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some((f) => f.type === 'device.hello') ? true : undefined,
+    );
+
+    // 短确认超时策略（等效 fake timers 推进 300s：真实 socket 套件纪律——
+    // 状态等待一律 poll，超时窗口经 policy.limits.confirmTimeoutMs 注入）
+    const policy = makePolicy([deliver]);
+    policy.limits = { ...policy.limits, confirmTimeoutMs: 150 };
+    relay.driver.offer(policy, 'sess-d16f', 'driver-d16f');
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some(
+        (f) => f.type === 'session.accept' && f.sessionId === 'sess-d16f',
+      ),
+    );
+
+    relay.driver.sendOp({
+      opId: 'op-t',
+      sessionId: 'sess-d16f',
+      op: {
+        type: 'fs.write',
+        path: 'never.txt',
+        content: 'x',
+        encoding: 'utf8',
+      },
+    });
+    const confirm = await relay.driver.waitFor(() =>
+      inbox.confirms.find((c) => c.opId === 'op-t'),
+    );
+
+    // 不批复——会话超时收割：CONFIRM_TIMEOUT 结果、文件未写
+    const result = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-t'),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe(Mecha.MECHA_ERROR_CODES[3]); // CONFIRM_TIMEOUT
+    expect(fs.existsSync(join(deliver, 'never.txt'))).toBe(false);
+
+    // 迟到批复：桥表项已被收割摘除——不写假 approved 账、不炸链路。
+    // end 帧与批复同 ws 有序（批复先处理），session_end 成行即批复已消化。
+    relay.driver.sendDown({ requestId: confirm.requestId, approved: true });
+    relay.driver.end('completed');
+    const lines = await waitFor(() => {
+      const parsed = readLogLines(join(home, 'logs', 'sess-d16f.jsonl'));
+      const last = parsed[parsed.length - 1];
+      return last !== undefined && last['kind'] === 'session_end'
+        ? parsed
+        : undefined;
+    });
+
+    // 恰一对结算（timeout）——假 approved 第二笔不存在（表项摘除的证据）
+    const confirmLines = lines.filter((l) => l['kind'] === 'confirm');
+    expect(confirmLines).toHaveLength(1);
+    expect(confirmLines[0]!['request']).toMatchObject({
+      requestId: 'op-t:confirm',
+    });
+    expect(confirmLines[0]!['result']).toMatchObject({
+      approved: false,
+      confirmEnd: 'timeout',
+    });
+    expect(lines[lines.length - 1]).toMatchObject({
+      kind: 'session_end',
+      reason: 'completed',
+    });
+  }, 20_000);
 
   it('IPC status/halt 接线：idle → armed（含 sessionId/driverAgentId）→ halt 幂等终局', async () => {
     const profile = 'd16c';
@@ -237,6 +355,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     created.push(deliver);
     const relay = await startMockRelay(0);
     relays.push(relay);
+    const inbox = collectInbound(relay);
     const daemon = await startDaemon({
       configPath: join(home, 'config.json'),
       relayUrl: relay.url,
@@ -280,6 +399,22 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     );
     expect(busy.type).toBe('session.reject');
 
+    // 在途确认遇 halt：终局收割（'ended' 真实结算对入档）——先等确认请求
+    // 抵达司机侧（= 桥表项已在），再刹车，时序确定
+    relay.driver.sendOp({
+      opId: 'op-h',
+      sessionId: 'sess-d16c',
+      op: {
+        type: 'fs.write',
+        path: 'halted.txt',
+        content: 'x',
+        encoding: 'utf8',
+      },
+    });
+    await relay.driver.waitFor(() =>
+      inbox.confirms.find((c) => c.opId === 'op-h'),
+    );
+
     // halt → 幂等终局（杀 exec + 焚 scratch + 合卷）→ status 回 idle
     const halted = await ipcCall(pipe, 'halt');
     expect(halted).toEqual({ ok: true });
@@ -293,8 +428,20 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       false,
     );
 
-    // 行车记录：consumer_halt 生命周期行先于 session_end（合卷恒末行）
+    // 行车记录：在途确认的真实结算对（confirmEnd 'ended'）+ consumer_halt
+    // 生命周期行先于 session_end（合卷恒末行）。
+    // 注：op 行（logOp）此处不落盘——已知部件面缺口（见 task-16 报告 fix
+    // 节）：终局同步合卷后，executor 的异步 op 结果续延才调 logOp，logger
+    // fd 已关（fail-loud 被 executor 的尽力而为吞错吸收）。属
+    // executor/session/logger 三部件的时序裁定面，非 daemon 接线可修。
     const lines = readLogLines(join(home, 'logs', 'sess-d16c.jsonl'));
+    const confirmLine = lines.find((l) => l['kind'] === 'confirm');
+    expect(confirmLine).toBeDefined();
+    expect(confirmLine!['request']).toMatchObject({ requestId: 'op-h:confirm' });
+    expect(confirmLine!['result']).toMatchObject({
+      approved: false,
+      confirmEnd: 'ended',
+    });
     const haltIdx = lines.findIndex(
       (l) => l['kind'] === 'lifecycle' && l['event'] === 'consumer_halt',
     );
@@ -387,6 +534,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     created.push(deliver);
     const relay = await startMockRelay(0);
     relays.push(relay);
+    const inbox = collectInbound(relay);
     const daemon = await startDaemon({
       configPath: join(home, 'config.json'),
       relayUrl: relay.url,
@@ -404,6 +552,22 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       ),
     );
     const logFile = join(home, 'logs', 'sess-d16e.jsonl');
+
+    // 在途确认遇断链：失电收割（'link_down' 真实结算对入档）——先等确认
+    // 请求抵达司机侧（= 桥表项已在），再杀链路，时序确定
+    relay.driver.sendOp({
+      opId: 'op-l',
+      sessionId: 'sess-d16e',
+      op: {
+        type: 'fs.write',
+        path: 'dropped.txt',
+        content: 'x',
+        encoding: 'utf8',
+      },
+    });
+    await relay.driver.waitFor(() =>
+      inbox.confirms.find((c) => c.opId === 'op-l'),
+    );
 
     // 杀链路 → 失电（宽限计时默认 60s，会话幸存）→ link_down 落账
     const port = Number(new URL(relay.url).port);
@@ -436,5 +600,16 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       expect(status.state).toBe('armed');
       expect(status.sessionId).toBe('sess-d16e');
     }
+
+    // 审计归真：断链收割的确认结算对（confirmEnd 'link_down'——批复未到，
+    // 结算通知即事实唯一来源）
+    const lines = readLogLines(logFile);
+    const confirmLine = lines.find((l) => l['kind'] === 'confirm');
+    expect(confirmLine).toBeDefined();
+    expect(confirmLine!['request']).toMatchObject({ requestId: 'op-l:confirm' });
+    expect(confirmLine!['result']).toMatchObject({
+      approved: false,
+      confirmEnd: 'link_down',
+    });
   }, 25_000);
 });
