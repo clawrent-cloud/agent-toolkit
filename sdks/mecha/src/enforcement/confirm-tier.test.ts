@@ -785,11 +785,14 @@ describe('computeTier（confirm-tier 判级）', () => {
 
   it('NB-2：op.env 命中危险键（NODE_OPTIONS / BASH_ENV）→ T2，与 argv/溯源形态无关', () => {
     const ws = makeWorkspace();
-    for (const env of [
+    // 显式 Record 注解：字面量数组的联合推断会给单键形态补 `?: undefined`
+    // 槽位，无法赋给 op 信封的 env: Record<string, string>（test-only 类型面）
+    const envs: Array<Record<string, string>> = [
       { NODE_OPTIONS: '--require ./evil.js' },
       { BASH_ENV: 'payload.sh' },
       { NODE_OPTIONS: 'x', BASH_ENV: 'y' }, // 双键同中
-    ]) {
+    ];
+    for (const env of envs) {
       expect(
         computeTier(
           { type: 'exec.run', argv: ['node', 'app.js'], cwd: ws, env },
