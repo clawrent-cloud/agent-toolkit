@@ -16,9 +16,10 @@ import {
 } from '../persist/runtime-install.js';
 import { autostartTarget, installAutostart } from '../persist/autostart.js';
 import { runSetup } from './setup.js';
+import { runUpdate } from './update.js';
 
 // T15：mecha CLI（bin `mecha` → dist/cli/index.js）。已注册 status/halt
-//（T15）+ setup（T18）+ daemon/uninstall（T19）；T20 update 后续追加。
+//（T15）+ setup（T18）+ daemon/uninstall（T19）+ update（T20）。
 //
 // 退出码契约：成功 0；守护进程未运行 1（「机甲守护进程未运行」）；其他失败 1。
 // 输出走 process.exitCode 而非 process.exit——避免 stdout 为管道时输出被截断。
@@ -186,10 +187,18 @@ program
     const shutdown = (signal: string): void => {
       if (stopping) return; // 信号可重入：只停一次
       stopping = true;
-      void handle.stop().then(() => {
-        console.log(`mecha daemon 已停机（${signal}）`);
-        process.exit(0);
-      });
+      // T20 补（T19 deferred Minor）：stop() 拒绝不可悬空——落一行停机失败
+      // 诊断并以退出码 1 收束，而不是 unhandledRejection 静默挂住进程。
+      void handle
+        .stop()
+        .then(() => {
+          console.log(`mecha daemon 已停机（${signal}）`);
+          process.exit(0);
+        })
+        .catch((err: unknown) => {
+          console.error(`mecha daemon 停机失败：${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
     };
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -219,6 +228,21 @@ program
       );
     } catch (err) {
       fail(`mecha uninstall 失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+// T20：update——**手动**更新（spec A11：无任何远程自动触发，本命令是唯一
+// 入口；模块内无定时器/后台任务）。查 npm registry latest → 新则下载 tarball、
+// 校验后装入 runtime 新版本目录并切 current → 提示重启守护进程；同版 no-op。
+// 进度与结果文案由 runUpdate 自行输出（console.log）。
+program
+  .command('update')
+  .description('手动检查更新：从 npm registry 拉取最新机甲 runtime（绝不自动触发）')
+  .action(async () => {
+    try {
+      await runUpdate();
+    } catch (err) {
+      fail(`mecha update 失败：${err instanceof Error ? err.message : String(err)}`);
     }
   });
 

@@ -45,4 +45,14 @@ describe('mecha CLI：setup 命令注册（冒烟）', () => {
     // Linux v0 只写单元不 enable：enable 命令以提示文案交给用户
     expect(src).toContain('systemctl --user enable clawrent-mecha');
   });
+
+  it('T20：update 命令注册——runUpdate 接线（手动更新，无远程触发）', () => {
+    expect(src).toContain(".command('update')");
+    expect(src).toContain('runUpdate(');
+  });
+
+  it('T20：daemon 停机路径 stop() 拒绝不悬空（.catch 落停机失败诊断行，T19 deferred Minor）', () => {
+    expect(src).toMatch(/handle\s*\.\s*stop\(\)[\s\S]*?\.catch\(/);
+    expect(src).toContain('停机失败');
+  });
 });
