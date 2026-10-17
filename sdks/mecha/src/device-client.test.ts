@@ -90,7 +90,7 @@ async function makeStack(opts?: {
       }
       return Promise.resolve({ requestId: req.requestId, approved: true });
     },
-    log: { logOp: () => {} },
+    log: { logOpStart: () => {}, logOp: () => {} },
   });
   const attached: Mecha.CapabilityManifest[] = [];
   const ended: MechaSessionEndEvent[] = [];
@@ -431,7 +431,7 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
     const session = new MechaSession({
       provenance: new ProvenanceStore(join(ws, 'provenance.json')),
       confirm: async (req) => ({ requestId: req.requestId, approved: true }),
-      log: { logOp: () => {} },
+      log: { logOpStart: () => {}, logOp: () => {} },
     });
     const linkEvents: boolean[] = [];
     const client = new DeviceClient({

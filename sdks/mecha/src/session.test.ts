@@ -98,7 +98,7 @@ function makeHarness(opts?: { holdConfirm?: boolean }): Harness {
     },
   );
   const logOp = vi.fn();
-  const log: ExecutorLogger = { logOp };
+  const log: ExecutorLogger = { logOpStart: vi.fn(), logOp };
   const attached: Mecha.CapabilityManifest[] = [];
   const ended: MechaSessionEndEvent[] = [];
   const policyUpdates: Array<{ frame: MechaPolicyUpdateFrame; applied: boolean }> =

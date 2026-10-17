@@ -56,7 +56,7 @@ function makeHarness(opts?: {
     }),
   );
   const logOp = vi.fn();
-  const log: ExecutorLogger = { logOp };
+  const log: ExecutorLogger = { logOpStart: vi.fn(), logOp };
   const executor = new MechaExecutor({
     policy: () => ({ dirs, programs: [], limits }),
     provenance,
@@ -585,7 +585,7 @@ describe('MechaExecutor 限额与审计兜底', () => {
           }),
           provenance: new ProvenanceStore(join(ws, 'p.json')),
           confirm: async (req) => ({ requestId: req.requestId, approved: true }),
-          log: { logOp: () => {} },
+          log: { logOpStart: () => {}, logOp: () => {} },
           scratchDir: 'relative/scratch',
         }),
     ).toThrow(TypeError);

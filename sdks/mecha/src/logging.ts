@@ -13,6 +13,10 @@ import type { MechaPolicyUpdateFrame } from './session.js';
  * 行格式（`kind` 判别）：
  *   - `session_begin`：manifest 全量入档——policy 快照（白名单目录 + 程序表 +
  *     限额）即「当时授权了什么」的原始记录；
+ *   - `op_request`：op 进入执行流（判级前）的取证锚点（R19）——op_request
+ *     落于执行前、result（`op`）落于完成后；op_request 无对应 result 行 =
+ *     该 op 被会话终局收割（killed/halt/end），由 session_end 行解释（任何
+ *     被考虑执行的 op 至少留一行）；
  *   - `op`：envelope + result 全量 verbatim——fs.write / file.upload 的
  *     content 字段携带驾驶员内容，正是审计载荷，原文入档（spec §6.1-2
  *     「T2 脚本全文入档」的追责证据；脚本即焚后此处是唯一全文留存）；
@@ -52,6 +56,7 @@ import type { MechaPolicyUpdateFrame } from './session.js';
 /** 行车记录单行载荷（kind 判别联合；timestamp 由 write 统一前置）。 */
 type DashcamLine =
   | { kind: 'session_begin'; manifest: Mecha.CapabilityManifest }
+  | { kind: 'op_request'; envelope: Mecha.MechaOpEnvelope }
   | { kind: 'op'; envelope: Mecha.MechaOpEnvelope; result: Mecha.MechaOpResult }
   | { kind: 'confirm'; request: Mecha.MechaConfirmRequest; result: MechaConfirmSettlement }
   | { kind: 'policy_update'; frame: MechaPolicyUpdateFrame; applied: boolean }
@@ -88,6 +93,14 @@ export class DashcamLogger {
     }
     this.currentSessionId = sessionId;
     this.write(sessionId, { kind: 'session_begin', manifest });
+  }
+
+  /** op 执行锚点行（R19）：op 进入执行流（判级前）即落一行——「任何被考虑
+   * 执行的 op 至少留一行」的取证锚点。无对应 result 行 = 该 op 被会话终局
+   * 收割（killed/halt/end），由 session_end 行解释。envelope.sessionId 寻
+   * 文件，未知会话抛错（与 logOp 同一 fail-loud 规则）。 */
+  logOpStart(envelope: Mecha.MechaOpEnvelope): void {
+    this.write(envelope.sessionId, { kind: 'op_request', envelope });
   }
 
   /** op 审计行（ExecutorLogger 结构满足，R8 每 op 恰一次）：envelope.sessionId

@@ -122,6 +122,17 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     const scratch = join(deliver, '.clawrent', 'scratch', 'sess-d16');
     expect(fs.existsSync(scratch)).toBe(true);
 
+    // ②' T0 免确认 op（fs.list）：request + result 成对入档（R19 锚点）
+    relay.driver.sendOp({
+      opId: 'op-0',
+      sessionId: 'sess-d16',
+      op: { type: 'fs.list', path: '.', depth: 0 },
+    });
+    const r0 = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-0'),
+    );
+    expect(r0.ok).toBe(true);
+
     // ③ 司机发 fs.write（T1）→ 机甲上行 confirmRequest → 司机代消费者批准
     relay.driver.sendOp({
       opId: 'op-1',
@@ -198,16 +209,34 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       true,
     );
 
-    const opLine = lines.find((l) => l['kind'] === 'op');
+    const opLine = lines.find(
+      (l) =>
+        l['kind'] === 'op' &&
+        (l['envelope'] as { opId: string }).opId === 'op-1',
+    );
     expect(opLine).toBeDefined();
-    expect((opLine!['envelope'] as { opId: string }).opId).toBe('op-1');
     expect((opLine!['result'] as { ok: boolean }).ok).toBe(true);
+
+    // R19 锚点（「任何被考虑执行的 op 至少留一行」）：T0 免确认 op 同样
+    // request+result 成对，request 恒在 result 之前（文件序 = 审计时间线）；
+    // T1 op 的 request 先于其 confirm 行（判级前落锚、确认后执行）
+    const lineIndex = (kind: string, opId: string): number =>
+      lines.findIndex(
+        (l) =>
+          l['kind'] === kind &&
+          (l['envelope'] as { opId: string }).opId === opId,
+      );
+    const req0 = lineIndex('op_request', 'op-0');
+    const res0 = lineIndex('op', 'op-0');
+    const req1 = lineIndex('op_request', 'op-1');
+    expect(req0).toBeGreaterThan(0); // 开卷之后
+    expect(res0).toBeGreaterThan(req0);
+    expect(req1).toBeGreaterThan(res0);
+    expect(kinds.indexOf('confirm')).toBeGreaterThan(req1);
+    expect(lineIndex('op', 'op-1')).toBeGreaterThan(kinds.indexOf('confirm'));
 
     expect(lines[lines.length - 1]!['kind']).toBe('session_end');
     expect(lines[lines.length - 1]!['reason']).toBe('completed');
-    // 顺序：开卷 → confirm → op → 合卷（逐行可读的审计时间线）
-    expect(kinds.indexOf('confirm')).toBeGreaterThan(0);
-    expect(kinds.indexOf('op')).toBeGreaterThan(kinds.indexOf('confirm'));
   }, 20_000);
 
   it('config.json 缺失 / 形状非法 / apiBase 协议非法 → 响亮拒绝', async () => {
@@ -430,10 +459,10 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
 
     // 行车记录：在途确认的真实结算对（confirmEnd 'ended'）+ consumer_halt
     // 生命周期行先于 session_end（合卷恒末行）。
-    // 注：op 行（logOp）此处不落盘——已知部件面缺口（见 task-16 报告 fix
-    // 节）：终局同步合卷后，executor 的异步 op 结果续延才调 logOp，logger
-    // fd 已关（fail-loud 被 executor 的尽力而为吞错吸收）。属
-    // executor/session/logger 三部件的时序裁定面，非 daemon 接线可修。
+    // R19 锚点不变量：被终局收割的在途 op 仍留 op_request 行（「任何被考虑
+    // 执行的 op 至少一行」）；无对应 result 行——由 session_end 行解释结局
+    //（request 行落于 fd 未关时——op 一经派发即落锚；result 续延晚于合卷，
+    // fail-loud 被 executor 尽力而为吞错吸收，行为维持现状）。
     const lines = readLogLines(join(home, 'logs', 'sess-d16c.jsonl'));
     const confirmLine = lines.find((l) => l['kind'] === 'confirm');
     expect(confirmLine).toBeDefined();
@@ -442,6 +471,14 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       approved: false,
       confirmEnd: 'ended',
     });
+    const lineByOp = (kind: string, opId: string): Record<string, unknown> | undefined =>
+      lines.find(
+        (l) =>
+          l['kind'] === kind &&
+          (l['envelope'] as { opId: string }).opId === opId,
+      );
+    expect(lineByOp('op_request', 'op-h')).toBeDefined();
+    expect(lineByOp('op', 'op-h')).toBeUndefined();
     const haltIdx = lines.findIndex(
       (l) => l['kind'] === 'lifecycle' && l['event'] === 'consumer_halt',
     );
@@ -610,6 +647,27 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     expect(confirmLine!['result']).toMatchObject({
       approved: false,
       confirmEnd: 'link_down',
+    });
+
+    // R19 锚点 + 结果成对：request 行断链前已落（派发即落锚）；result 行随
+    // 收割结算落盘（会话幸存、fd 未关——executor 面 link_down 口径 IO_ERROR）
+    const lineByOp = (
+      kind: string,
+      opId: string,
+    ): Record<string, unknown> | undefined =>
+      lines.find(
+        (l) =>
+          l['kind'] === kind &&
+          (l['envelope'] as { opId: string }).opId === opId,
+      );
+    const reqL = lineByOp('op_request', 'op-l');
+    const resL = lineByOp('op', 'op-l');
+    expect(reqL).toBeDefined();
+    expect(resL).toBeDefined();
+    expect(lines.indexOf(resL!)).toBeGreaterThan(lines.indexOf(reqL!));
+    expect(resL!['result']).toMatchObject({
+      ok: false,
+      error: { code: Mecha.MECHA_ERROR_CODES[6] }, // IO_ERROR
     });
   }, 25_000);
 });

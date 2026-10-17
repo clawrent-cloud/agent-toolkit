@@ -83,15 +83,21 @@ import type { ProvenanceStore } from '../enforcement/provenance.js';
  * requireConfirm 据标记选码（CONFIRM_TIMEOUT / IO_ERROR 'link down'），
  * 本层只 await。
  *
- * 行车记录（Controller ruling R8，binding）：每 op 结束恰好一次
- * `log.logOp(envelope, result)`（结果帧即审计载荷——成功/失败/拒绝全量；
+ * 行车记录（Controller ruling R8 + R19，binding）：每 op 开始恰好一次
+ * `log.logOpStart(envelope)`（判级前的执行锚点——「任何被考虑执行的 op 至少
+ * 留一行」，被终局收割的 op 由 request 行 + session_end 行解释）、结束恰好
+ * 一次 `log.logOp(envelope, result)`（结果帧即审计载荷——成功/失败/拒绝全量；
  * 确认与否从 result error 可见，不另设 logConfirm 依赖）。日志器故障吞掉
  * 不回改 op 结果（尽力而为；日志器自身健壮性归 Task 13）。
  */
 
-/** 行车记录最小接口（R8 裁定）：Task 13 DashcamLogger 结构满足之，避免
- * executor 前向依赖 logging 模块。 */
+/** 行车记录最小接口（R8 裁定 + R19 补锚点）：Task 13 DashcamLogger 结构满足
+ * 之，避免 executor 前向依赖 logging 模块。 */
 export interface ExecutorLogger {
+  /** 执行锚点（R19，binding）：op 进入执行流（判级前）即落一行——「任何被
+   * 考虑执行的 op 至少留一行」；被会话终局收割的 op（结果行未及落盘）由
+   * request 行 + session_end 行解释结局。 */
+  logOpStart(envelope: Mecha.MechaOpEnvelope): void;
   logOp(envelope: Mecha.MechaOpEnvelope, result: Mecha.MechaOpResult): void;
 }
 
@@ -397,6 +403,16 @@ export class MechaExecutor {
   private async dispatch(
     envelope: Mecha.MechaOpEnvelope,
   ): Promise<Mecha.MechaOpResult> {
+    // 执行锚点（R19，binding）：判级前即落 op_request——「任何被考虑执行的
+    // op 至少留一行」（T0 直执行、T1/T2 经确认、判级拒绝全不留白）。被终局
+    // 收割的 op（结果行未及落盘）由 request 行 + session_end 行解释。吞错
+    // 口径与 logOp 一致：日志器故障不阻断执行、不回改 op 结果（T13 管
+    // 日志器自身健壮性）。
+    try {
+      this.deps.log.logOpStart(envelope);
+    } catch {
+      // 尽力而为：审计锚点失败不阻断执行
+    }
     const { op } = envelope;
     if (op.type === 'exec.run') return this.dispatchExec(op, envelope);
 

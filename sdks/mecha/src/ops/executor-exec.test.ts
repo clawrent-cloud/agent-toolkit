@@ -65,7 +65,7 @@ function makeHarness(opts?: {
     }),
   );
   const logOp = vi.fn();
-  const log: ExecutorLogger = { logOp };
+  const log: ExecutorLogger = { logOpStart: vi.fn(), logOp };
   const chunks: Mecha.MechaExecChunk[] = [];
   const executor = new MechaExecutor({
     policy: () => ({ dirs, programs, limits }),
