@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { installRuntime, readPkgMeta, resolvePkgDir } from '../persist/runtime-install.js';
-import { MECHA_REGISTRY_LATEST_URL, runUpdate } from './update.js';
+import { MECHA_REGISTRY_LATEST_URL, MECHA_TARBALL_MAX_BYTES, runUpdate } from './update.js';
 
 /**
  * mecha update 手动更新测试（plan Task 20）。runtime 落点全部经 R17
@@ -232,5 +232,117 @@ describe('runUpdate（手动更新；spec A11：无任何远程自动触发）',
     );
     await expect(runUpdate({ fetchImpl: f2, homeOverride: home })).rejects.toThrow();
     expect(fs.existsSync(join(home, 'runtime'))).toBe(false);
+  });
+});
+
+// ── 体积上限（final review (a)-minor：download/decompress 双侧门）────────────
+
+describe('runUpdate 体积上限（包体积超限）', () => {
+  /** registry 元数据应答正常、tarball 应答为给定 Response 的 fetch 替身。 */
+  function makeFetch2(meta: RegistryMetaLike, tarballRes: Response): typeof fetch {
+    return (async (input: Parameters<typeof fetch>[0]) => {
+      if (String(input) === MECHA_REGISTRY_LATEST_URL) {
+        return new Response(JSON.stringify(meta), { status: 200 });
+      }
+      return tarballRes;
+    }) as typeof fetch;
+  }
+
+  /** 无 content-length 的流式应答：pull 时按 4KiB 惰性产块，总量 total 字节。 */
+  function streamingResponse(total: number, chunkSize = 4096): Response {
+    let produced = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (produced >= total) {
+          controller.close();
+          return;
+        }
+        const size = Math.min(chunkSize, total - produced);
+        produced += size;
+        controller.enqueue(new Uint8Array(size));
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }
+
+  it('生产常量钉死：MECHA_TARBALL_MAX_BYTES = 100MB', () => {
+    expect(MECHA_TARBALL_MAX_BYTES).toBe(100 * 1024 * 1024);
+  });
+
+  it('Content-Length 超上限 → 「包体积超限」拒绝下载，body 不读、runtime 不动', async () => {
+    const home = makeHome();
+    await installRuntime(makeFakePkg('0.1.0'), { homeOverride: home });
+    let bodyRead = false;
+    // 最小 Response 替身（downloadTarball 只消费 status/headers/body）：
+    // body = null 且 arrayBuffer 记读——门若正确应在读取前拦下
+    const res = {
+      status: 200,
+      headers: new Headers({ 'content-length': String(MECHA_TARBALL_MAX_BYTES + 1) }),
+      body: null,
+      arrayBuffer: async () => {
+        bodyRead = true;
+        return new ArrayBuffer(0);
+      },
+    } as unknown as Response;
+
+    await expect(
+      runUpdate({ fetchImpl: makeFetch2(META_020, res), homeOverride: home }),
+    ).rejects.toThrow(/包体积超限/);
+    expect(bodyRead).toBe(false); // 门在读取前拦下（Content-Length 明示即可判）
+    expect(fs.readFileSync(join(home, 'runtime', 'current'), 'utf8').trim()).toBe('v0.1.0');
+  });
+
+  it('Content-Length 缺失/谎报 → 流式累计超上限即刻中止读（上限经注入缩放，同码路径）', async () => {
+    const home = makeHome();
+    await installRuntime(makeFakePkg('0.1.0'), { homeOverride: home });
+
+    await expect(
+      runUpdate({
+        fetchImpl: makeFetch2(META_020, streamingResponse(1024 * 1024 + 1)),
+        homeOverride: home,
+        maxTarballBytes: 1024 * 1024,
+      }),
+    ).rejects.toThrow(/包体积超限/);
+    expect(fs.readFileSync(join(home, 'runtime', 'current'), 'utf8').trim()).toBe('v0.1.0');
+    expect(fs.existsSync(join(home, 'runtime', 'v0.2.0'))).toBe(false);
+  });
+
+  it('解压后超上限（gzip 炸弹形态）→ 「包体积超限」拒绝解包，指针不动', async () => {
+    const home = makeHome();
+    await installRuntime(makeFakePkg('0.1.0'), { homeOverride: home });
+    // 单成员 4KB+1 的 tar（数据全零 → gzip 后极小），触发解压侧的门
+    const big = Buffer.alloc(4 * 1024 + 1);
+    const blob = Buffer.concat([
+      tarHeader('package/dist/blob.bin', big.length),
+      big,
+      Buffer.alloc((BLOCK - (big.length % BLOCK)) % BLOCK, 0),
+      Buffer.alloc(BLOCK * 2, 0), // 终止块
+    ]);
+    const { fetchImpl } = makeFetch(META_020, gzipSync(blob));
+
+    await expect(
+      runUpdate({ fetchImpl, homeOverride: home, maxTarballBytes: 4096 }),
+    ).rejects.toThrow(/包体积超限/);
+    expect(fs.readFileSync(join(home, 'runtime', 'current'), 'utf8').trim()).toBe('v0.1.0');
+  });
+
+  it('限额内正常流式下载照常安装（注入上限的回归面）', async () => {
+    const home = makeHome();
+    await installRuntime(makeFakePkg('0.1.0'), { homeOverride: home });
+    const tgz = buildTgz([
+      { name: 'package/package.json', data: JSON.stringify({ name: '@clawrent/mecha', version: '0.2.0' }) },
+      { name: 'package/dist/cli/index.js', data: '// mecha cli v0.2.0\n' },
+    ]);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runUpdate({
+      fetchImpl: makeFetch2(META_020, new Response(new Uint8Array(tgz), { status: 200 })),
+      homeOverride: home,
+      maxTarballBytes: 1024 * 1024,
+    });
+
+    expect(result.updated).toBe(true);
+    expect(fs.existsSync(join(home, 'runtime', 'v0.2.0', 'dist', 'cli', 'index.js'))).toBe(true);
+    log.mockRestore();
   });
 });

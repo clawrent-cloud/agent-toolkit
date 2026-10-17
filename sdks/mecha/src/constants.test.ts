@@ -44,4 +44,19 @@ describe('mecha 布局函数', () => {
   it('ipcName 同 profile 幂等', () => {
     expect(ipcName('default')).toBe(ipcName('default'));
   });
+
+  it('ipcName homeBase 覆盖（T16 ledger (a)-minor）：POSIX UDS 落覆盖 home；win32 管道名不受影响', () => {
+    const override = process.platform === 'win32' ? 'C:\\override-home' : '/tmp/override-home';
+    const withOverride = ipcName('work', override);
+    if (process.platform === 'win32') {
+      // 命名管道与文件系统无关：覆盖与否同名
+      expect(withOverride).toBe(ipcName('work'));
+    } else {
+      expect(withOverride).toBe(join(override, 'clawrent-mecha-work.sock'));
+    }
+    // 缺省 = mechaHome()（与不传一致）
+    expect(ipcName('work')).toBe(ipcName('work', mechaHome()));
+    // profile 仍隔离
+    expect(ipcName('default', override)).not.toBe(withOverride);
+  });
 });

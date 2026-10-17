@@ -48,8 +48,8 @@ function scriptIo(answers: string[]): {
   return { io, notes, asks };
 }
 
-/** 内存 fs 替身。 */
-function memFs(existing: string[]): {
+/** 内存 fs 替身。sizes = 程序真身的 stat 大小表（I4 占位桩探测；缺省 10）。 */
+function memFs(existing: string[], sizes: Record<string, number> = {}): {
   fsImpl: SetupFs;
   writes: Array<{ path: string; data: string }>;
   mkdirs: string[];
@@ -62,6 +62,12 @@ function memFs(existing: string[]): {
   const fsImpl: SetupFs = {
     existsSync: (p) => present.has(p),
     realpathSync: (p) => p,
+    statSync: (p) => {
+      if (!present.has(p)) {
+        throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+      }
+      return { size: sizes[p] ?? 10 };
+    },
     mkdirSync: (p) => {
       mkdirs.push(p);
     },
@@ -206,7 +212,7 @@ describe('runSetup（setup 向导,T18）', () => {
 
   it('dev 档探测：mock exec 假 PATH 输出 → programs 含 absPath 真身（首行胜出）；git 缺失跳过并提示', async () => {
     const { io, notes } = scriptIo(['1', '', '2']);
-    const { fsImpl } = memFs([DOCUMENTS]);
+    const { fsImpl } = memFs([DOCUMENTS, PY, NODE]); // 真身实存（I4 stat 探测的盘上面）
     const { fetchImpl, calls } = mockFetchRoutes(HAPPY_ROUTES);
     const { execImpl, calls: execCalls } = fakeExec({
       python: `${PY}\r\nC:\\other\\python.exe\r\n`, // 多行：FIRST 匹配行胜出
@@ -429,5 +435,66 @@ describe('runSetup（setup 向导,T18）', () => {
     });
 
     expect(result.policy.dirs).toEqual([DOCUMENTS]);
+  });
+
+  it('I4：0 字节占位桩（Windows Store alias）→ 跳过并提示占位桩；正常文件照常注册', async () => {
+    const { io, notes } = scriptIo(['1', '', '2']);
+    const { fsImpl } = memFs([DOCUMENTS, PY, NODE], { [PY]: 0, [NODE]: 1024 });
+    const { fetchImpl } = mockFetchRoutes(HAPPY_ROUTES);
+    const { execImpl } = fakeExec({ python: `${PY}\n`, node: `${NODE}\n` });
+
+    const result = await runSetup({
+      apiBase: 'https://api.clawrent.test',
+      io,
+      fetchImpl,
+      execImpl,
+      fsImpl,
+      homeOverride: HOME_OVERRIDE,
+    });
+
+    expect(result.policy.programs).toEqual([{ name: 'node', absPath: NODE }]);
+    expect(notes.join('\n')).toContain('Windows Store 占位桩');
+    expect(notes.join('\n')).toContain('已跳过');
+  });
+
+  it('I4：真身 realpath 落在 WindowsApps 下（reparse 别名归宿）→ 跳过并提示占位桩', async () => {
+    const storePy = WIN32
+      ? 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe'
+      : '/home/u/AppData/Local/Microsoft/WindowsApps/python3';
+    const { io, notes } = scriptIo(['1', '', '2']);
+    const { fsImpl } = memFs([DOCUMENTS, storePy, NODE], { [storePy]: 4096, [NODE]: 1024 });
+    const { fetchImpl } = mockFetchRoutes(HAPPY_ROUTES);
+    const { execImpl } = fakeExec({ python: `${storePy}\n`, node: `${NODE}\n` });
+
+    const result = await runSetup({
+      apiBase: 'https://api.clawrent.test',
+      io,
+      fetchImpl,
+      execImpl,
+      fsImpl,
+      homeOverride: HOME_OVERRIDE,
+    });
+
+    expect(result.policy.programs).toEqual([{ name: 'node', absPath: NODE }]);
+    expect(notes.join('\n')).toContain('Windows Store 占位桩');
+  });
+
+  it('I4：真身 stat 不可判定（探测竞态）→ 按跳过处理不注册', async () => {
+    const { io, notes } = scriptIo(['1', '', '2']);
+    const { fsImpl } = memFs([DOCUMENTS, PY]); // NODE 不在 present → statSync ENOENT
+    const { fetchImpl } = mockFetchRoutes(HAPPY_ROUTES);
+    const { execImpl } = fakeExec({ python: `${PY}\n`, node: `${NODE}\n` });
+
+    const result = await runSetup({
+      apiBase: 'https://api.clawrent.test',
+      io,
+      fetchImpl,
+      execImpl,
+      fsImpl,
+      homeOverride: HOME_OVERRIDE,
+    });
+
+    expect(result.policy.programs).toEqual([{ name: 'python', absPath: PY }]);
+    expect(notes.join('\n')).toContain('未找到 node，已跳过（可稍后在网页添加）');
   });
 });

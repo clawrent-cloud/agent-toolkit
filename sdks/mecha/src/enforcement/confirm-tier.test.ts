@@ -648,6 +648,123 @@ describe('computeTier（confirm-tier 判级）', () => {
     }
   });
 
+  // ── 红卡逃逸收口（final review C1）：非路径形态的程序引用 ──────────────────
+
+  it('C1①：python/python3 -m 模块执行 = 内联 → T2（cwd 植入 mod.py 的 sys.path[0] 逃逸面收口；宁误红接受 -m pip）', () => {
+    const ws = makeWorkspace();
+    fs.writeFileSync(join(ws, 'tidy.py'), 'x'); // 植入体：-m 模块解析的落点语义面
+    for (const name of ['python', 'python3']) {
+      expect(
+        computeTier(execOp([name, '-m', 'tidy'], ws), {
+          program: okProgram(join(ws, 'bin', `${name}.exe`)),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    // equals 形（-m=tidy）一并命中（精确旗标的 '=' 规则自动覆盖）
+    expect(
+      computeTier(execOp(['python', '-m=tidy'], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 溯源全假仍红：形态本身即内联入口，与溯源无关
+    expect(
+      computeTier(execOp(['python', '-m', 'pip'], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+  });
+
+  it('C1②：旗标内嵌路径（node --require=./evil.js）溯源实存命中 → T2', () => {
+    const ws = makeWorkspace();
+    fs.writeFileSync(join(ws, 'evil.js'), 'x');
+    const key = join(CANONICAL(ws), 'evil.js');
+    expect(
+      computeTier(execOp(['node', '--require=./evil.js', 'app.js'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: (p) => p === key,
+      }),
+    ).toBe('T2');
+  });
+
+  it('C1③ pin：旗标内嵌不存在路径（--require=./nonexistent.js）仍 T2——(c) 规则与溯源存在性无关（宁误红）', () => {
+    const ws = makeWorkspace();
+    expect(
+      computeTier(execOp(['node', '--require=./nonexistent.js', 'app.js'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+  });
+
+  it('C1② pin：= 值段按裸实参同口径溯源（--config=evil.yaml，token 无分隔符无盘符）实存命中 → T2', () => {
+    const ws = makeWorkspace();
+    fs.writeFileSync(join(ws, 'evil.yaml'), 'x');
+    const key = join(CANONICAL(ws), 'evil.yaml');
+    expect(
+      computeTier(execOp(['node', '--config=evil.yaml', 'app.js'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: (p) => p === key,
+      }),
+    ).toBe('T2');
+  });
+
+  it('C1③：--experimental-loader=./x.mjs（旗标嵌相对路径，实存与否无关）→ T2', () => {
+    const ws = makeWorkspace();
+    for (const arg of [
+      '--experimental-loader=./x.mjs',
+      '--experimental-loader=./gone.mjs',
+    ]) {
+      expect(
+        computeTier(execOp(['node', arg, 'app.js'], ws), {
+          program: okProgram(join(ws, 'bin', 'node.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'C1③：/ 旗标嵌路径或盘符（/p=C:\\evil.js 等 cmd/POSIX-shell 混写形态）→ T2（win32）',
+    () => {
+      const ws = makeWorkspace();
+      for (const arg of ['/p=C:\\evil.js', '/load=C:/evil.js', '/x:\\\\srv\\evil.js']) {
+        expect(
+          computeTier(execOp(['cmd', arg], ws), {
+            program: okProgram(join(ws, 'bin', 'cmd.exe')),
+            provenance: none,
+          }),
+        ).toBe('T2');
+      }
+    },
+  );
+
+  it('C1 回归：朴素绝对路径实参不按旗标判（T1 基线保持）；--eval=1+1 仍经内联 equals 规则 T2', () => {
+    const ws = makeWorkspace();
+    expect(
+      computeTier(execOp(['node', join(ws, 'app.js')], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    // = 值非路径（无分隔符无盘符）不触发 (c)；内联 equals 规则兜住 --eval=1+1
+    expect(
+      computeTier(execOp(['node', '--eval=1+1'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // = 值段溯源不命中（非登记文件）不误红——T1 基线保持
+    expect(
+      computeTier(execOp(['node', '--config=plain.txt', 'app.js'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────
 
   it('schema 外 op type：响亮抛错（穷尽哨兵，编码错误不静默判级）', () => {

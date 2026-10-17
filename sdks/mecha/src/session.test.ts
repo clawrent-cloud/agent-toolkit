@@ -11,6 +11,7 @@ import {
   type MechaSessionOfferFrame,
 } from './session.js';
 import { ProvenanceStore } from './enforcement/provenance.js';
+import { DashcamLogger } from './logging.js';
 import type { ExecutorLogger } from './ops/executor.js';
 
 // ── fixture 基建（os.tmpdir，plan 全局约束）────────────────────────────────
@@ -41,6 +42,7 @@ interface Harness {
   session: MechaSession;
   confirm: ReturnType<typeof vi.fn>;
   logOp: ReturnType<typeof vi.fn>;
+  logLifecycle: ReturnType<typeof vi.fn>;
   provenance: ProvenanceStore;
   ws: string;
   realWs: string;
@@ -75,7 +77,12 @@ function env(op: Mecha.MechaOp, opId = 'op-1'): Mecha.MechaOpEnvelope {
   return { opId, sessionId: 'sess-1', op };
 }
 
-function makeHarness(opts?: { holdConfirm?: boolean }): Harness {
+function makeHarness(opts?: {
+  holdConfirm?: boolean;
+  /** 确认批复语义（I3）：approved 缺省 true；remember=true 时批复携带记忆位。 */
+  approved?: boolean;
+  remember?: boolean;
+}): Harness {
   const ws = makeWorkspace('mecha-session-');
   const realWs = fs.realpathSync.native(ws);
   const ws2 = makeWorkspace('mecha-session2-');
@@ -94,10 +101,15 @@ function makeHarness(opts?: { holdConfirm?: boolean }): Harness {
             resolve({ requestId: req.requestId, approved: r.approved });
         });
       }
-      return Promise.resolve({ requestId: req.requestId, approved: true });
+      return Promise.resolve({
+        requestId: req.requestId,
+        approved: opts?.approved ?? true,
+        ...(opts?.remember === true ? { remember: true } : {}),
+      });
     },
   );
   const logOp = vi.fn();
+  const logLifecycle = vi.fn();
   const log: ExecutorLogger = { logOpStart: vi.fn(), logOp };
   const attached: Mecha.CapabilityManifest[] = [];
   const ended: MechaSessionEndEvent[] = [];
@@ -107,6 +119,7 @@ function makeHarness(opts?: { holdConfirm?: boolean }): Harness {
     provenance,
     confirm,
     log,
+    logLifecycle,
     onPolicyUpdate: (frame, applied) => {
       policyUpdates.push({ frame, applied });
     },
@@ -117,6 +130,7 @@ function makeHarness(opts?: { holdConfirm?: boolean }): Harness {
     session,
     confirm,
     logOp,
+    logLifecycle,
     provenance,
     ws,
     realWs,
@@ -206,6 +220,15 @@ describe('MechaSession offer 与独占', () => {
       'reject',
     );
     expect(h.session.offer(offerFrame(h.policy, '..\\evil')).decision).toBe(
+      'reject',
+    );
+    expect(fs.existsSync(join(h.ws, '.clawrent'))).toBe(false);
+    expect(h.session.state).toBe('idle');
+  });
+
+  it('sessionId 含冒号 → reject（NTFS ADS 流名防线，I1；日志文件名同规则），盘上无痕迹', () => {
+    const h = makeHarness();
+    expect(h.session.offer(offerFrame(h.policy, 'sess:ads')).decision).toBe(
       'reject',
     );
     expect(fs.existsSync(join(h.ws, '.clawrent'))).toBe(false);
@@ -646,5 +669,206 @@ describe('MechaSession op 串行', () => {
       'op-a',
       'op-b',
     ]);
+  });
+});
+
+// ── I1：op 信封 sessionId 绑定（final review）────────────────────────────
+
+describe('MechaSession 信封 sessionId 绑定（I1）', () => {
+  it('信封 sessionId 与在会不符 → IO_ERROR session mismatch、零执行、当前会话日志留拒收行', async () => {
+    const h = makeHarness();
+    h.acceptOffer();
+
+    const r = await h.session.executeOp({
+      opId: 'op-x',
+      sessionId: 'sess-other',
+      op: { type: 'fs.write', path: 'x.txt', content: 'X', encoding: 'utf8' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('IO_ERROR');
+    expect(r.error?.message).toBe('session mismatch');
+    // 不进执行流（无 op_request/op 审计行）、不进确认（零副作用）
+    expect(h.logOp).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(fs.existsSync(join(h.realWs, 'x.txt'))).toBe(false);
+    // 拒收留痕落在**当前**会话（信封 sessionId 无合法日志落点，锚不落）
+    expect(h.logLifecycle).toHaveBeenCalledTimes(1);
+    expect(h.logLifecycle).toHaveBeenCalledWith('op_rejected_session_mismatch', {
+      opId: 'op-x',
+      claimedSessionId: 'sess-other',
+    });
+  });
+
+  it('终局后（idle）同会话信封照旧 no active session——绑定门不遮蔽 idle 诊断', async () => {
+    const h = makeHarness();
+    h.acceptOffer();
+    h.session.disarm('completed');
+    h.logLifecycle.mockClear();
+
+    const r = await h.session.executeOp(
+      env({ type: 'fs.list', path: '.' }, 'op-after'),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toBe('no active session');
+    expect(h.logLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('本会话信封照常放行（绑定门不误伤合法 op）', async () => {
+    const h = makeHarness();
+    h.acceptOffer();
+    const r = await h.session.executeOp(
+      env({ type: 'fs.list', path: '.' }, 'op-ok'),
+    );
+    expect(r.ok).toBe(true);
+    expect(h.logLifecycle).not.toHaveBeenCalled();
+  });
+});
+
+// ── I3：T1 remember（spec §5.3 兑现，final review）───────────────────────
+
+describe('MechaSession T1 remember（I3）', () => {
+  it('exec T1 批准+记住 → 同程序再 exec 免确认且 ok；不同程序仍确认；T2 永不记忆', async () => {
+    const h = makeHarness({ remember: true });
+    h.acceptOffer();
+    // fixture 直写脚本（不经驾驶 op → 不入溯源 → exec 判 T1）
+    fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");');
+
+    const r1 = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r1'),
+    );
+    expect(r1.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+    expect(h.confirm.mock.calls[0]![0].tier).toBe('T1');
+
+    // 同程序第二次 exec：免确认（无 confirmRequest）+ ok
+    const r2 = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r2'),
+    );
+    expect(r2.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+    expect(h.logLifecycle).toHaveBeenCalledWith('confirmed_remembered', {
+      opId: 'op-r2',
+      program: NODE.absPath,
+    });
+
+    // 不同程序 Y：不在记忆集 → 仍确认
+    const yAbs = join(h.ws, process.platform === 'win32' ? 'y.cmd' : 'y.sh');
+    fs.writeFileSync(yAbs, 'echo y\n');
+    const tightened: Mecha.MechaPolicy = {
+      ...h.policy,
+      programs: [NODE, { name: 'y', absPath: yAbs }],
+    };
+    h.session.policyUpdate({ type: 'policy.update', policy: tightened, direction: 'tighten' });
+    await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['y', 'arg'], cwd: '.' }, 'op-r3'),
+    );
+    expect(h.confirm).toHaveBeenCalledTimes(2);
+
+    // T2（node -e 内联）永不命中记忆集：node 已记忆仍弹卡，且即便 remember
+    // 批复也不会把 T2 写入记忆集
+    const t2a = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', '-e', 'console.log(1)'], cwd: '.' }, 'op-t2a'),
+    );
+    expect(t2a.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(3);
+    expect(h.confirm.mock.calls[2]![0].tier).toBe('T2');
+    const t2b = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', '-e', 'console.log(2)'], cwd: '.' }, 'op-t2b'),
+    );
+    expect(t2b.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(4); // T2 每次都确认
+  });
+
+  it('T1 remember 不越权到 fs.*：fs.write 即便 remember 批复也不进记忆集（每写仍确认）', async () => {
+    const h = makeHarness({ remember: true });
+    h.acceptOffer();
+    const w1 = await h.session.executeOp(
+      env({ type: 'fs.write', path: 'w.txt', content: 'W', encoding: 'utf8' }, 'op-w1'),
+    );
+    expect(w1.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+    const w2 = await h.session.executeOp(
+      env({ type: 'fs.write', path: 'w2.txt', content: 'W', encoding: 'utf8' }, 'op-w2'),
+    );
+    expect(w2.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(2); // 非 exec.run → 不记忆
+  });
+
+  it('终局清记忆：新 offer 后同程序 exec 重新确认（集随会话生灭）', async () => {
+    const h = makeHarness({ remember: true });
+    h.acceptOffer();
+    fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");');
+    await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r1'),
+    );
+    await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r2'),
+    );
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+
+    h.session.disarm('completed');
+    h.acceptOffer(); // 新会话（同一 session 对象复用）
+    h.confirm.mockClear();
+    const r3 = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r3'),
+    );
+    expect(r3.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(1); // 记忆已清，重新弹卡
+  });
+
+  it('审计面（真 DashcamLogger）：remember 后日志恰一对 confirm + 一行 confirmed_remembered', async () => {
+    const ws = makeWorkspace('mecha-session-remember-');
+    const logsDir = join(ws, 'logs');
+    const logger = new DashcamLogger(logsDir);
+    const provenance = new ProvenanceStore(join(ws, 'provenance.json'));
+    fs.writeFileSync(join(ws, 'a.js'), 'console.log("a");'); // fixture 直写 → 非溯源
+    const confirm = vi.fn((req: Mecha.MechaConfirmRequest) => {
+      const result = { requestId: req.requestId, approved: true, remember: true };
+      // 桥接层（daemon）的批复入档职责替身：每个抵达此处的请求恰记一对
+      logger.logConfirm(req, result);
+      return Promise.resolve(result);
+    });
+    const session = new MechaSession({
+      provenance,
+      confirm,
+      log: logger,
+      logLifecycle: (event, detail) => logger.logLifecycle(event, detail),
+    });
+    session.on('attached', (m) => logger.beginSession(m.sessionId, m));
+    session.on('ended', () => logger.endSession('completed'));
+    const d = session.offer(
+      offerFrame(
+        { dirs: [ws], programs: [NODE], limits: { ...Mecha.MECHA_LIMITS_DEFAULTS } },
+        'sess-1',
+      ),
+    );
+    expect(d.decision).toBe('accept');
+
+    const r1 = await session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r1'),
+    );
+    const r2 = await session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r2'),
+    );
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    session.disarm('completed');
+
+    const lines = fs
+      .readFileSync(join(logsDir, 'sess-1.jsonl'), 'utf8')
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const confirmLines = lines.filter((l) => l['kind'] === 'confirm');
+    expect(confirmLines).toHaveLength(1); // 恰一对 confirm（第二次无卡可对）
+    const remembered = lines.filter(
+      (l) => l['kind'] === 'lifecycle' && l['event'] === 'confirmed_remembered',
+    );
+    expect(remembered).toHaveLength(1);
+    expect(remembered[0]!['detail']).toEqual({
+      opId: 'op-r2',
+      program: NODE.absPath,
+    });
   });
 });

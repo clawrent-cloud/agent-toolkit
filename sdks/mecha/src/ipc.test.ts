@@ -299,6 +299,12 @@ describe('profile 清洗（T5 遗留：ipcName 不清洗，本层补齐）', () 
     expect(safeIpcName('default')).toBe(ipcName('default'));
     expect(safeIpcName('work-1.a_b')).toBe(ipcName('work-1.a_b'));
   });
+
+  it('safeIpcName 透传 homeBase（T16 ledger (a)-minor：daemon homeOverride 一致性）', () => {
+    const override = process.platform === 'win32' ? 'C:\\oh' : '/tmp/oh';
+    expect(safeIpcName('work-1.a_b', override)).toBe(ipcName('work-1.a_b', override));
+    expect(safeIpcName('default')).toBe(ipcName('default')); // 缺省不变
+  });
 });
 
 describe('端点名形态校验（构造/调用即炸，fail-fast）', () => {

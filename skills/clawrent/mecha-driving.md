@@ -24,7 +24,7 @@ How confirmation works / 确认机制：
 | Tier / 级 | Trigger / 触发 | What the consumer sees / 消费者所见 |
 |---|---|---|
 | T0 | Read/list inside the whitelist / 白名单内读/列 | Nothing — silent / 无——静默滚过 |
-| T1 | Every file change (`fs_write`/`fs_move`/`fs_delete`/`fs_upload`); running a whitelisted program / 所有文件改动；执行白名单内程序 | Confirmation card with a human-readable summary, e.g. "the driver wants to run python sort.py in D:\docs". They may tick "don't ask again this session" per program / 人话描述确认卡；可按程序勾选「本会话内不再确认」 |
+| T1 | Every file change (`fs_write`/`fs_move`/`fs_delete`/`clawrent_mecha_upload`); running a whitelisted program / 所有文件改动；执行白名单内程序 | Confirmation card with a human-readable summary, e.g. "the driver wants to run python sort.py in D:\docs". They may tick "don't ask again this session" per program / 人话描述确认卡；可按程序勾选「本会话内不再确认」 |
 | T2 | Red card — see [Red Lines](#5-red-lines--红线清单) / 红卡——见红线清单 | Full disclosure card; never auto-remembered / 完整披露卡；绝不免确认 |
 
 Your tool call resolves with the op's final result: approved ops run and return their result; a refusal comes back as `{ok:false, error:{code:"CONFIRM_DENIED"}}`; if no click happens within the confirm window, `CONFIRM_TIMEOUT` — **timeout means deny, never allow**. The result carries explicit guidance: 「消费者未批准/超时，请调整方案或询问消费者。」 / 工具调用会拿到 op 的最终结果：批准则执行并回传结果；被拒返回 `CONFIRM_DENIED`；确认窗口内无人点击则 `CONFIRM_TIMEOUT`——**超时即拒，绝不放行**。结果附带明确指引：「消费者未批准/超时，请调整方案或询问消费者。」

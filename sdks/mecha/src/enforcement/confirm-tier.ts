@@ -57,14 +57,33 @@ import type { ProgramGuardResult } from './program-guard.js';
  *    review 第二轮/收口裁定）与单杠簇含 `e`（`-pe` = -p + -e，实测可执行；
  *    大小写敏感；仅 node 启用 e 簇、仅 bash/sh/zsh 启用 c 簇——cmd/powershell
  *    的多字符旗标语义不同，不做逐字解析）；
+ *  - python/python3 另认 `-m`（final review C1 裁定）：`python -m mod` 以
+ *    cwd 为 sys.path[0] 解析模块——cwd 白名单内的植入 `mod.py` 即被执行，
+ *    而 `modulename` 解析为不存在的路径、溯源零命中 → 原判 T1 漏红；`-m`
+ *    整体判内联（宁误红接受 `python -m pip`）；
  *  除此不拆组合、不做前缀/子串猜测；代价是旗标成为子命令参数时误红（如
  *  `python script.py -c`），落在宁可误红不可漏红的方向。
  *
+ * 旗标 token 内嵌路径（final review C1 裁定 (b)/(c)，宁误红）：解释器清单
+ * 之外的旗标也能把路径语义藏进单元素 token（`--require=./evil.js`——路径
+ * 嵌在旗标里，按文件名解析必落空 → 溯源零命中 → T1 漏红）。两道收口：
+ *  - (c) 形态门：`-` 打头的 token 含路径分隔符（`/` 或 `\`）或（win32）盘符
+ *    → T2 一律红，与实存/溯源无关——它是加载指令（`--require`、
+ *    `--experimental-loader`）而非普通实参。`/` 打头的 token 仅 win32 参与
+ *    （cmd/powershell 旗标语义，`/p:C:\x` 形态）；posix 上 `/` 打头是绝对
+ *    路径形态——R2 溯源解析的主通道与 T1 基线的载体，不按旗标判（否则
+ *    「路径形态 exec T1」的既有钉死语义全灭）；
+ *  - (b) 值段溯源：argv 元素含 `=` 时，取**首个** `=` 之后的值段，与裸实参
+ *    同口径（exec.cwd resolve → realpathAllowingTail → 查溯源）——值段命中
+ *    溯源照红；值段解析不可判定跳过（同 R2）。token 本身无分隔符/盘符时
+ *    （`--config=evil.yaml`）这是唯一防线；(c) 已红的 token 值段不再到达
+ *    （先判 (c)）。
+ *
  * v0 清单外明确不补（非内联入口，或已被其他机制覆盖）：`pwsh -File
  * <script>` 是文件执行——脚本路径作为 argv 元素已由溯源判红覆盖；
- * `python -m <module>` 是模块执行——spec §6.3 传递性执行已裁定接受（已启动
- * 进程内部行为无法逐层管控）；`-e`/`-en` 级 pwsh 缩写有歧义（PowerShell
- * 参数绑定直接报错，不构成执行入口）。
+ * `python -m` 原判「传递性执行接受」已被 final review C1 推翻（-m 升内联，
+ * 见上）；`-e`/`-en` 级 pwsh 缩写有歧义（PowerShell 参数绑定直接报错，
+ * 不构成执行入口）。
  */
 
 /** 判级产物：tier 字符串，或 exec 硬拒（deny 码域钉死为协议七码中的两位——
@@ -132,8 +151,10 @@ interface InterpreterInlineSpec {
 }
 
 const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
-  python: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
-  python3: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
+  // -m 升内联（final review C1）：`python -m mod` 经 sys.path[0]=cwd 解析
+  // 模块文件，白名单植入体借此绕过溯源判红——宁误红接受 `python -m pip`
+  python: { flags: ['-c', '-m'], prefixes: ['-c'], caseInsensitive: false },
+  python3: { flags: ['-c', '-m'], prefixes: ['-c'], caseInsensitive: false },
   // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标（review 第二轮裁定）；
   // --print 为其文档化长形（实测 node --print '1+1' → 2，re-review 收口裁定）
   node: {
@@ -194,6 +215,31 @@ const CLUSTER_RE: Record<'c' | 'e', RegExp> = {
   c: /^-[^-]*c/,
   e: /^-[^-]*e/,
 };
+
+/** 盘符提示（final review C1 (c)）：token 内任何「字母+冒号」段（`C:evil`、
+ * `--require=C:x`）。win32 专属语义——posix 上该形态只是普通文件名（与
+ * DRIVE_RELATIVE 同一口径），不参与判红。 */
+const DRIVE_HINT = /[a-zA-Z]:/;
+
+/**
+ * 旗标 token 内嵌路径判定（final review C1 (c)，宁误红）：`-`/`/` 打头的
+ * token 中出现路径分隔符或盘符 → T2 一律红——它是加载指令
+ * （`--require=./evil.js`、`--experimental-loader=./x`、win32 的
+ * `/p=C:\evil.js`）而非普通实参，路径嵌在 token 内按文件名解析必落空，
+ * 溯源通道对此失明。与实存/溯源登记无关（不存在的路径也红——语义面已
+ * 越界）。posix 上 `/` 打头的 token 是绝对路径形态（R2 溯源解析的主通道、
+ * 路径形态 exec T1 基线的载体），不按旗标判。
+ */
+function flagTokenEmbedsPath(arg: string): boolean {
+  const rest = arg.slice(1); // 剥旗标首字符——`/d` 的引导斜杠不是路径分隔符
+  if (arg.startsWith('-')) {
+    return /[\\/]/.test(rest) || (WIN32 && DRIVE_HINT.test(arg));
+  }
+  if (arg.startsWith('/')) {
+    return WIN32 && (/[\\/]/.test(rest) || DRIVE_HINT.test(arg));
+  }
+  return false;
+}
 
 /** 解释器内联判定：argv[1..] 任一元素命中该解释器的内联旗标（精确、
  * `flag='` equals 形、无歧义前缀族、组合短旗标簇——见清单注释）。 */
@@ -259,9 +305,21 @@ function execTier(
     // 盘符相对形态：解析基座在 node 与子进程内核间可能分歧 → 不做不可靠的
     // 溯源解析，直接红（fail-safe，见 DRIVE_RELATIVE 注释）
     if (WIN32 && DRIVE_RELATIVE.test(arg)) return 'T2';
+    // C1(c)：旗标 token 内嵌路径/盘符 → 一律红（加载指令面，与溯源无关）
+    if (flagTokenEmbedsPath(arg)) return 'T2';
     const resolved = realpathAllowingTail(path.resolve(op.cwd, arg));
     if (resolved === null) continue; // 不可判定 → 跳过（R2 裁定）
     if (ctx.provenance(resolved)) return 'T2';
+    // C1(b)：`=` 值段按裸实参同口径溯源解析（`--require=./evil.js`、
+    // `--config=evil.yaml` 的值段宇宙）——token 无分隔符/盘符时的唯一防线
+    const eq = arg.indexOf('=');
+    if (eq >= 0) {
+      const value = arg.slice(eq + 1);
+      if (value !== '') {
+        const resolvedValue = realpathAllowingTail(path.resolve(op.cwd, value));
+        if (resolvedValue !== null && ctx.provenance(resolvedValue)) return 'T2';
+      }
+    }
   }
 
   // ④ 其余 exec = T1

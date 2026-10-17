@@ -45,13 +45,22 @@ import {
 /** registry latest 元数据端点（fetch 注入的缺省目标；plan 接口 verbatim）。 */
 export const MECHA_REGISTRY_LATEST_URL = 'https://registry.npmjs.org/@clawrent/mecha/latest';
 
+/** 更新包体积上限（字节，100MB；final review (a)-minor）：Content-Length 门、
+ * 流式累计门、解压后门三层共用——超过即「包体积超限」响亮拒绝（防恶意/
+ * 异常超巨包泼内存，下载通道自身即边界）。 */
+export const MECHA_TARBALL_MAX_BYTES = 100 * 1024 * 1024;
+
 /** 被更新的包名（tarball 内 package.json 的 name 校验口径）。 */
 const PKG_NAME = '@clawrent/mecha';
 
 /** runUpdate 选项：fetchImpl 注入（测试 mock）；homeOverride 承 R17 test-only
- * 落点覆盖（runtime 全部派生其下，测试绝不触碰 `~/.clawrent/mecha`）。 */
+ * 落点覆盖（runtime 全部派生其下，测试绝不触碰 `~/.clawrent/mecha`）；
+ * maxTarballBytes 承体积上限的 test-only 缩放（同一码路径用小上限验证三层
+ * 门；生产恒为 MECHA_TARBALL_MAX_BYTES，缺省即 100MB）。 */
 export interface UpdateOpts extends RuntimeInstallOpts {
   fetchImpl?: typeof fetch;
+  /** 体积上限覆盖（**test-only**；缺省 MECHA_TARBALL_MAX_BYTES）。 */
+  maxTarballBytes?: number;
 }
 
 /** 更新结果（plan 接口 verbatim）。 */
@@ -103,7 +112,11 @@ async function fetchRegistryMeta(
   return { version: parsed.data.version, tarball: parsed.data.dist.tarball };
 }
 
-async function downloadTarball(url: string, fetchImpl: typeof fetch): Promise<Buffer> {
+async function downloadTarball(
+  url: string,
+  fetchImpl: typeof fetch,
+  maxBytes: number,
+): Promise<Buffer> {
   // 双保险：zod schema 已挡 http:，这里再守一道（下载入口自身即边界）
   if (!url.startsWith('https://')) {
     throw new Error(`mecha update: 更新包地址非 HTTPS，拒绝下载（${url}）`);
@@ -117,7 +130,46 @@ async function downloadTarball(url: string, fetchImpl: typeof fetch): Promise<Bu
   if (res.status < 200 || res.status >= 300) {
     throw new Error(`mecha update: 下载更新包失败（status ${res.status}）`);
   }
-  return Buffer.from(await res.arrayBuffer());
+  // 体积门①：Content-Length 明示超限 → 不读 body 直接拒（对端声明即可判）
+  const lenHeader = res.headers.get('content-length');
+  if (lenHeader !== null) {
+    const declared = Number(lenHeader);
+    if (Number.isInteger(declared) && declared >= 0 && declared > maxBytes) {
+      throw new Error(
+        `mecha update: 包体积超限（Content-Length ${declared} 字节 > ${maxBytes} 上限），拒绝下载`,
+      );
+    }
+  }
+  // 体积门②：流式累计——Content-Length 缺失/谎报的兜底，累计超限即刻中止
+  const reader = res.body?.getReader();
+  if (reader === undefined) {
+    // 无流式 body（替身/老运行时）：退回一次性读，尺寸由同一上限兜
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > maxBytes) {
+      throw new Error(`mecha update: 包体积超限（${buf.length} 字节 > ${maxBytes} 上限）`);
+    }
+    return buf;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const piece = Buffer.from(value); // 拷贝出 chunk（流可能复用底层缓冲）
+    total += piece.length;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel(); // 即刻中止读（不再为超限数据泼内存）
+      } catch {
+        // 尽力而为：取消失败不影响拒绝
+      }
+      throw new Error(
+        `mecha update: 包体积超限（超过 ${maxBytes} 字节，下载中止）`,
+      );
+    }
+    chunks.push(piece);
+  }
+  return Buffer.concat(chunks);
 }
 
 // ── 本地版本口径 ─────────────────────────────────────────────────────────────
@@ -195,12 +247,18 @@ function tarSize(h: Buffer): number {
  * （typeflag '5'）建目录，GNU longname（'L'）认名，其余类型只跳数据块。
  * 成员路径含 `..`/空段/绝对路径/盘符 → 响亮抛（防穿越，绝不写出 destDir）。
  */
-function extractPackageTgz(tgz: Buffer, destDir: string): void {
+function extractPackageTgz(tgz: Buffer, destDir: string, maxBytes: number): void {
   let tar: Buffer;
   try {
     tar = gunzipSync(tgz);
   } catch (err) {
     throw new Error(`mecha update: 更新包不可解压（gzip 损坏）：${errMsg(err)}`, { cause: err });
+  }
+  // 体积门③：解压后超限（gzip 炸弹形态）→ 响亮拒绝（解包写出前拦下）
+  if (tar.length > maxBytes) {
+    throw new Error(
+      `mecha update: 包体积超限（解压后 ${tar.length} 字节 > ${maxBytes} 上限）`,
+    );
   }
   let offset = 0;
   let longName: string | null = null;
@@ -294,10 +352,11 @@ export async function runUpdate(opts: UpdateOpts = {}): Promise<UpdateResult> {
   }
   const staging = fs.mkdtempSync(join(tmpdir(), 'mecha-update-'));
   try {
-    const tgz = await downloadTarball(meta.tarball, fetchImpl);
+    const maxBytes = opts.maxTarballBytes ?? MECHA_TARBALL_MAX_BYTES;
+    const tgz = await downloadTarball(meta.tarball, fetchImpl, maxBytes);
     fs.writeFileSync(join(staging, 'pkg.tgz'), tgz); // 临时 .tgz 落 os.tmpdir()（plan 口径）
     const extracted = join(staging, 'package');
-    extractPackageTgz(tgz, extracted);
+    extractPackageTgz(tgz, extracted, maxBytes);
     validateStagedPkg(extracted, meta);
     await installRuntime(extracted, { homeOverride: opts.homeOverride });
     console.log(`已更新 v${local} → v${meta.version}，请重启机甲守护进程（mecha daemon 或重新开机）`);

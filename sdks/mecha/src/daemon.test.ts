@@ -419,7 +419,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
       relay.frameLog.some((f) => f.type === 'device.hello') ? true : undefined,
     );
 
-    const pipe = safeIpcName(profile);
+    const pipe = safeIpcName(profile, home); // 与 daemon 同一 homeOverride 宇宙（POSIX UDS 落点）
     const idle = await ipcCall(pipe, 'status');
     expect(idle.ok).toBe(true);
     if (idle.ok) {
@@ -515,6 +515,160 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     // 再 halt：幂等（无会话即无事可刹），响应照常
     const haltedAgain = await ipcCall(pipe, 'halt');
     expect(haltedAgain).toEqual({ ok: true });
+  }, 20_000);
+
+  it('I1+I3 接线：错会话信封拒收（session mismatch）落当前会话日志；T1 remember 后同程序 exec 免确认（audit 恰一对 confirm + confirmed_remembered 行）', async () => {
+    const home = makeHome('d16h');
+    const deliver = fs.mkdtempSync(join(tmpdir(), 'mecha-d16-remember-'));
+    created.push(deliver);
+    // fixture 直写脚本（不经驾驶 op → 不入溯源 → exec 判 T1）
+    fs.writeFileSync(join(deliver, 'a.js'), 'console.log("a");');
+    const relay = await startMockRelay(0);
+    relays.push(relay);
+    const inbox = collectInbound(relay);
+    const daemon = await startDaemon({
+      configPath: join(home, 'config.json'),
+      relayUrl: relay.url,
+      homeOverride: home,
+    });
+    daemons.push(daemon);
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some((f) => f.type === 'device.hello') ? true : undefined,
+    );
+
+    relay.driver.offer(makePolicy([deliver]), 'sess-d16h', 'driver-d16h');
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some(
+        (f) => f.type === 'session.accept' && f.sessionId === 'sess-d16h',
+      ),
+    );
+    const logFile = join(home, 'logs', 'sess-d16h.jsonl');
+
+    // ① 首次 T1 exec：confirmRequest 到达 → 消费者批 + 勾「不再确认」
+    const sendExec = (opId: string, sessionId = 'sess-d16h'): void => {
+      relay.driver.sendOp({
+        opId,
+        sessionId,
+        op: { type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' },
+      });
+    };
+    sendExec('op-r1');
+    const confirm = await relay.driver.waitFor(() =>
+      inbox.confirms.find((c) => c.opId === 'op-r1'),
+    );
+    expect(confirm.tier).toBe('T1');
+    relay.driver.sendDown({ requestId: confirm.requestId, approved: true, remember: true });
+    const r1 = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-r1'),
+    );
+    expect(r1.ok).toBe(true);
+
+    // ② 同程序第二次 exec：免确认（无 confirmRequest）→ opResult ok
+    sendExec('op-r2');
+    const r2 = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-r2'),
+    );
+    expect(r2.ok).toBe(true);
+    expect(inbox.confirms.find((c) => c.opId === 'op-r2')).toBeUndefined();
+
+    // ③ 错会话信封：IO_ERROR 'session mismatch'（不执行、不确认）
+    sendExec('op-z', 'sess-ghost');
+    const rz = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-z'),
+    );
+    expect(rz.ok).toBe(false);
+    expect(rz.error?.code).toBe(Mecha.MECHA_ERROR_CODES[6]); // IO_ERROR
+    expect(rz.error?.message).toBe('session mismatch');
+    expect(inbox.confirms.find((c) => c.opId === 'op-z')).toBeUndefined();
+
+    // ④ 终局合卷后核审计面：恰一对 confirm（op-r1）+ confirmed_remembered
+    //（op-r2）+ op_rejected_session_mismatch（op-z）；错会话 op 无 op 行
+    relay.driver.end('completed');
+    const lines = await waitFor(() => {
+      const parsed = readLogLines(logFile);
+      const last = parsed[parsed.length - 1];
+      return last !== undefined && last['kind'] === 'session_end'
+        ? parsed
+        : undefined;
+    });
+    const confirmLines = lines.filter((l) => l['kind'] === 'confirm');
+    expect(confirmLines).toHaveLength(1);
+    expect(confirmLines[0]!['request']).toMatchObject({ requestId: 'op-r1:confirm' });
+    const lifecycles = lines.filter((l) => l['kind'] === 'lifecycle');
+    expect(
+      lifecycles.some(
+        (l) =>
+          l['event'] === 'confirmed_remembered' &&
+          (l['detail'] as { opId?: string }).opId === 'op-r2',
+      ),
+    ).toBe(true);
+    expect(
+      lifecycles.some(
+        (l) =>
+          l['event'] === 'op_rejected_session_mismatch' &&
+          (l['detail'] as { opId?: string; claimedSessionId?: string }).opId === 'op-z' &&
+          (l['detail'] as { claimedSessionId?: string }).claimedSessionId === 'sess-ghost',
+      ),
+    ).toBe(true);
+    expect(
+      lines.some(
+        (l) =>
+          (l['kind'] === 'op' || l['kind'] === 'op_request') &&
+          (l['envelope'] as { opId: string }).opId === 'op-z',
+      ),
+    ).toBe(false); // 错会话信封零执行锚（I1 绑定门先于执行流）
+  }, 20_000);
+
+  it('I2 惰性清扫：崩溃残留 scratch（mtime 早于开机）随首次会话终局清除；交付物与开机后的新目录不误伤', async () => {
+    const home = makeHome('d16i');
+    const deliver = fs.mkdtempSync(join(tmpdir(), 'mecha-d16-sweep-'));
+    created.push(deliver);
+    // 造孤儿：上次崩溃运行的 scratch 目录（mtime 拨到过去）
+    const scratchRoot = join(deliver, '.clawrent', 'scratch');
+    const orphan = join(scratchRoot, 'sess-orphan');
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(join(orphan, 'residue.js'), 'x');
+    const old = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(orphan, old, old);
+    // 非 scratch 交付物（不焚）
+    fs.writeFileSync(join(deliver, '交付物.txt'), 'keep');
+
+    const relay = await startMockRelay(0);
+    relays.push(relay);
+    const daemon = await startDaemon({
+      configPath: join(home, 'config.json'),
+      relayUrl: relay.url,
+      homeOverride: home,
+    });
+    daemons.push(daemon);
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some((f) => f.type === 'device.hello') ? true : undefined,
+    );
+
+    relay.driver.offer(makePolicy([deliver]), 'sess-sweep', 'driver-sweep');
+    await relay.driver.waitFor(() =>
+      relay.frameLog.some(
+        (f) => f.type === 'session.accept' && f.sessionId === 'sess-sweep',
+      ),
+    );
+    const ownScratch = join(scratchRoot, 'sess-sweep');
+    expect(fs.existsSync(ownScratch)).toBe(true);
+    // 本 daemon 在位期间的新 sibling 目录（活跃语义）不被误伤
+    const young = join(scratchRoot, 'sess-young');
+    fs.mkdirSync(young, { recursive: true });
+
+    relay.driver.end('completed');
+    await relay.driver.waitFor(() => {
+      const parsed = readLogLines(join(home, 'logs', 'sess-sweep.jsonl'));
+      const last = parsed[parsed.length - 1];
+      return last !== undefined && last['kind'] === 'session_end'
+        ? true
+        : undefined;
+    });
+    expect(fs.existsSync(orphan)).toBe(false); // 孤儿被清扫
+    expect(fs.existsSync(ownScratch)).toBe(false); // 自身即焚
+    expect(fs.existsSync(young)).toBe(true); // 开机后的目录不碰
+    expect(fs.existsSync(join(deliver, '交付物.txt'))).toBe(true); // 交付物不焚
   }, 20_000);
 
   it('policy.update 接线：tighten 受理并落账；idle 拒绝回复且不炸审计闸（T13 守卫）', async () => {
@@ -655,7 +809,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     }, 10_000);
 
     // 会话在宽限内幸存：status 仍 armed
-    const status = await ipcCall(safeIpcName(profile), 'status');
+    const status = await ipcCall(safeIpcName(profile, home), 'status');
     expect(status.ok).toBe(true);
     if (status.ok) {
       expect(status.state).toBe('armed');

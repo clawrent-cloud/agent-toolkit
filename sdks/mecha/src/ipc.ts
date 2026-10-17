@@ -93,10 +93,12 @@ export function assertValidProfile(profile: string): void {
   }
 }
 
-/** 校验后的 `ipcName(profile)`——ipcName 调用边界的清洗门（daemon/CLI 统一走此）。 */
-export function safeIpcName(profile: string): string {
+/** 校验后的 `ipcName(profile)`——ipcName 调用边界的清洗门（daemon/CLI 统一
+ * 走此）。homeBase 透传（T16 ledger (a)-minor：daemon homeOverride 的端点
+ * 一致性，见 constants.ipcName）。 */
+export function safeIpcName(profile: string, homeBase?: string): string {
   assertValidProfile(profile);
-  return ipcName(profile);
+  return ipcName(profile, homeBase);
 }
 
 /** 端点名形态校验（对最终端点名，双平台各自把关）。 */

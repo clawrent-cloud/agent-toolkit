@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Mecha } from '@clawrent/protocol';
 import { MECHA_PACKAGE_VERSION, mechaHome } from './constants.js';
 import { DeviceClient } from './device-client.js';
@@ -59,6 +59,14 @@ import { ProvenanceStore } from './enforcement/provenance.js';
  *     ('consumer_halt')（幂等：无会话即无事可刹）。
  *  8. stop()：在会终局（'platform'）→ 断设备通道（停重连/心跳，挂等的
  *     connect() 以拒绝收场）→ 关 IPC。幂等；返回即无悬挂计时器。
+ *  9. 即焚的崩溃兜底——惰性孤儿清扫（I2 fix，final review）：scratch 的
+ *     删除点在会话终局（session.teardown），daemon 崩溃/被杀时该点不达，
+ *     scratch 残留为孤儿。开机即扫不可行（daemon 只在 offer 时才知道白名
+ *     单根），故惰性执行：daemon 记开机时刻，每次会话终局（'ended'）后
+ *     清扫本会话 scratch 根（首白名单目录 .clawrent/scratch/）下 mtime 早
+ *     于开机时刻的 sibling 目录——上次崩溃运行的孤儿必然早于本 daemon 开
+ *     机，首次会话终局即被清；开机后新建的目录（活跃会话在用）一律不碰。
+ *     清扫是卫生性动作：单目录失败吞掉留待下次，不阻断终局链。
  */
 
 /** 守护进程配置（config.json 形状 = T18 setup 落盘契约）。 */
@@ -119,6 +127,33 @@ function harvestedSettlement(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * 惰性孤儿清扫（I2 fix，见文件头规则 9）：遍历 scratch 根下的目录条目，
+ * mtime 早于 `startedAtMs`（本 daemon 开机时刻）的按即焚口径递归删除——
+ * 崩溃残留的孤儿 scratch 必然早于本 daemon 开机；开机后新建的目录（活跃
+ * 会话在用/新会话刚建）一律不碰。根不可读 = 无可清扫；单目录失败留待下
+ * 次终局重试（卫生性动作，绝不炸终局链）。
+ */
+function sweepOrphanScratch(root: string | null, startedAtMs: number): void {
+  if (root === null) return;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return; // 根不存在/不可读：无可清扫
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(root, entry.name);
+    try {
+      if (fs.statSync(dir).mtimeMs >= startedAtMs) continue; // 开机后的目录不碰
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 卫生性动作：失败留待下次终局重试
+    }
+  }
 }
 
 function isEnoent(err: unknown): boolean {
@@ -217,6 +252,10 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   let driverAgentId: string | null = null;
   let activeOp: string | null = null;
   let since = Date.now();
+  // I2 惰性清扫口径：开机时刻 + 最近一个在会会话的 scratch 根（'attached'
+  // 时从 manifest 记下——daemon 只在 offer 时才知道白名单根；'ended' 时用）。
+  const startedAtMs = Date.now();
+  let endedScratchRoot: string | null = null;
 
   /** 确认回路桥（requestId → 桥接表项）。表项存在 = 司机批复未落地：
    * 会话侧收割（onConfirmSettled）与司机批复（confirmResult）双方都以
@@ -245,6 +284,9 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
         client.send(req); // mecha.confirmRequest 上行（生产由平台转发消费者网页）
       }),
     log: logger, // DashcamLogger 结构满足 ExecutorLogger（logOp 每 op 恰一次）
+    // 会话级生命周期落账（I1/I3 fix）：错会话信封拒收行与 T1-remember 标记
+    // 行经此入当前会话日志（闸位与下方 logLifecycle 同一口径：无会话不落）。
+    logLifecycle: (event, detail) => logLifecycle(event, detail),
     onChunk: (chunk) => client.send(chunk), // exec.run 流块上行（哑管道，断链即弃）
     onPolicyUpdate: (frame, applied) => {
       // T13 约束：仅会话在位时落账——session 的该回调在 idle 拒绝时也会触发
@@ -266,6 +308,7 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   session.on('attached', (manifest) => {
     logger.beginSession(manifest.sessionId, manifest); // manifest 全量入档（开卷）
     currentSessionId = manifest.sessionId;
+    endedScratchRoot = dirname(manifest.scratchDir); // I2：终局惰性清扫的根
     since = Date.now();
   });
 
@@ -276,6 +319,10 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     pendingConfirms.clear(); // 迟到批复不解锁已终局的确认
     since = Date.now();
     logger.endSession(event.reason); // session_end 恒末行 + 关 fd（幂等）
+    // I2 惰性孤儿清扫：自身 scratch 已随终局焚毁，此处清同根下上次崩溃
+    // 运行的残留（mtime 早于本 daemon 开机）——卫生性动作，失败已内吞。
+    sweepOrphanScratch(endedScratchRoot, startedAtMs);
+    endedScratchRoot = null;
   });
 
   // ── 设备通道（出站单向 ws，client 只连不监听）────────────────────────────
@@ -372,7 +419,10 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
   });
 
   // ── 本地 IPC（离线刹车通道；T15 纪律：handler 同步返回）──────────────────
-  const ipc = new IpcServer(safeIpcName(config.profile), {
+  // 端点名带 home（T16 ledger (a)-minor）：homeOverride 时 POSIX UDS 与
+  // logs/provenance 同宇宙——CLI 侧以同一 override 推导端点即可找到 daemon；
+  // win32 命名管道与文件系统无关（ipcName 内部忽略）。
+  const ipc = new IpcServer(safeIpcName(config.profile, home), {
     status: () => ({
       state: session.state,
       ...(currentSessionId !== null

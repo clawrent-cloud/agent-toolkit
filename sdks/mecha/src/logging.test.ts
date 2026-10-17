@@ -287,6 +287,7 @@ describe('DashcamLogger 行格式与记账', () => {
     expect(() => logger.beginSession('../evil', m)).toThrow();
     expect(() => logger.beginSession('a\\b', m)).toThrow();
     expect(() => logger.beginSession('.', m)).toThrow();
+    expect(() => logger.beginSession('sess:ads', m)).toThrow(); // NTFS ADS（I1 同规则）
     expect(fs.existsSync(join(ws, 'evil.jsonl'))).toBe(false);
   });
 

@@ -570,7 +570,7 @@ describe('mecha 端到端（真 daemon × mock relay × 真 MechaDriver）', () 
     const { driver, deliver, home } = stack;
     const policy = makePolicy([deliver]);
     await offerAndAttach(stack, policy, 'sess-halt');
-    const pipe = safeIpcName(profile);
+    const pipe = safeIpcName(profile, home); // 与 daemon 同一 homeOverride 宇宙（POSIX UDS 落点）
     const logFile = join(home, 'logs', 'sess-halt.jsonl');
 
     // armed 快照（IPC status 镜像会话态）

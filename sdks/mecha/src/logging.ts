@@ -64,9 +64,17 @@ type DashcamLine =
   | { kind: 'session_end'; reason: Mecha.MechaSessionEndReason };
 
 /** sessionId 硬校验（与 session.ts isValidSessionId 同规则）：日志文件路径
- * 的构成件，分隔符/点段 = 写逃逸，零容忍。 */
+ * 的构成件，分隔符/点段 = 写逃逸，零容忍；冒号一并拒（NTFS ADS 流名——
+ * `sess:ads.jsonl` 会把日志写进交替数据流，I1 final review 同规则收口）。 */
 function assertSessionId(id: string): void {
-  if (id === '' || id === '.' || id === '..' || id.includes('/') || id.includes('\\')) {
+  if (
+    id === '' ||
+    id === '.' ||
+    id === '..' ||
+    id.includes('/') ||
+    id.includes('\\') ||
+    id.includes(':')
+  ) {
     throw new Error(`DashcamLogger: sessionId 必须为纯路径段，收到 ${JSON.stringify(id)}`);
   }
 }

@@ -39,10 +39,14 @@ export function provenancePath(): string {
   return join(mechaHome(), 'provenance.json');
 }
 
-/** IPC 端点名（按 profile 隔离，多实例门）：命名管道/UDS 路径 */
-export function ipcName(profile: string): string {
+/** IPC 端点名（按 profile 隔离，多实例门）：命名管道/UDS 路径。
+ * homeBase（additive，final review (a)-minor）：POSIX UDS 的落点覆盖——
+ * daemon 的 homeOverride（R17 test-only）须与 IPC 端点同宇宙（T16 ledger：
+ * 覆盖 home 时 UDS 若仍落真实 home，override 会话的 CLI 刹车通道找不到
+ * daemon）。缺省 mechaHome()。win32 命名管道与文件系统无关，不受影响。 */
+export function ipcName(profile: string, homeBase?: string): string {
   const base = `clawrent-mecha-${profile}`;
   return process.platform === 'win32'
     ? `\\\\.\\pipe\\${base}`
-    : join(mechaHome(), `${base}.sock`);
+    : join(homeBase ?? mechaHome(), `${base}.sock`);
 }

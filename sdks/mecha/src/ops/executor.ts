@@ -119,14 +119,34 @@ export interface MechaConfirmSettlement extends Mecha.MechaConfirmResult {
   confirmEnd?: 'timeout' | 'link_down' | 'ended';
 }
 
+/**
+ * 确认回调的会话侧元数据（I3 fix，非协议字段——不出现在 MechaConfirmRequest
+ * 线形上）：requireConfirm 发起处的判级产物。session 的 wrappedConfirm 据此
+ * 兑现 T1-remember（spec §5.3「本会话不再确认」）——仅 exec.run + T1 命中；
+ * T2 的判级产物照常先于本元数据消费（computeTier 先跑、红卡短路记忆集）。
+ */
+export interface MechaConfirmMeta {
+  /** 确认所属的 op 类型（executor 分发处的字面量）。 */
+  opType: Mecha.MechaOp['type'];
+  /** 判级档位（T1/T2 经确认制组携带）。 */
+  tier?: 'T1' | 'T2';
+  /** exec.run 专属：matchProgram 产物 absPath（判级 ctx.program.absPath
+   * 同源——裸名命中为登记路径 verbatim，路径命中为真实化产物）。 */
+  programAbsPath?: string;
+}
+
 /** executor 依赖注入（R1 裁定：scratchDir 构造参数，Task 12 session 接线）。 */
 export interface MechaExecutorDeps {
   /** 会话策略取值器：每 op 现取——policy.update tighten 立即生效的前提。 */
   policy: () => Mecha.MechaPolicy;
   provenance: ProvenanceStore;
   /** 确认回调（session 层包装后注入：300s 超时 + 断链取消，见
-   * MechaConfirmSettlement）。 */
-  confirm: (req: Mecha.MechaConfirmRequest) => Promise<MechaConfirmSettlement>;
+   * MechaConfirmSettlement）。第二参数 meta 为确认发起处的判级产物
+   * （MechaConfirmMeta——session 侧 T1-remember 的判定依据）。 */
+  confirm: (
+    req: Mecha.MechaConfirmRequest,
+    meta?: MechaConfirmMeta,
+  ) => Promise<MechaConfirmSettlement>;
   log: ExecutorLogger;
   /** 会话暂存区绝对路径（file.upload 唯一落点；spec §5.6 即焚区）。 */
   scratchDir: string;
@@ -533,13 +553,17 @@ export class MechaExecutor {
     envelope: Mecha.MechaOpEnvelope,
     tier: 'T1' | 'T2',
     summary: string,
+    meta: MechaConfirmMeta,
   ): Promise<Mecha.MechaOpResult | null> {
-    const decision = await this.deps.confirm({
-      requestId: `${envelope.opId}:confirm`,
-      opId: envelope.opId,
-      tier,
-      summary,
-    });
+    const decision = await this.deps.confirm(
+      {
+        requestId: `${envelope.opId}:confirm`,
+        opId: envelope.opId,
+        tier,
+        summary,
+      },
+      meta,
+    );
     if (decision.approved) return null;
     if (decision.confirmEnd === 'timeout') {
       return fail(
@@ -602,6 +626,7 @@ export class MechaExecutor {
       envelope,
       tier,
       `驾驶员想写入 ${guard.real}`,
+      { opType: 'fs.write', tier },
     );
     if (denied) return denied;
     fs.writeFileSync(guard.real, buf);
@@ -622,6 +647,7 @@ export class MechaExecutor {
       envelope,
       tier,
       `驾驶员想创建目录 ${guard.real}`,
+      { opType: 'fs.mkdir', tier },
     );
     if (denied) return denied;
     fs.mkdirSync(guard.real, { recursive: true });
@@ -656,6 +682,7 @@ export class MechaExecutor {
       envelope,
       tier,
       `驾驶员想把 ${from.real} ${verb}到 ${to.real}`,
+      { opType: op.type, tier },
     );
     if (denied) return denied;
     act(from.real, to.real);
@@ -740,6 +767,7 @@ export class MechaExecutor {
       envelope,
       tier,
       `驾驶员想删除 ${guard.real}`,
+      { opType: 'fs.delete', tier },
     );
     if (denied) return denied;
     fs.rmSync(guard.real, { recursive: op.recursive });
@@ -764,6 +792,7 @@ export class MechaExecutor {
       envelope,
       tier,
       `驾驶员想上传 ${op.name} 到会话暂存区`,
+      { opType: 'file.upload', tier },
     );
     if (denied) return denied;
     fs.mkdirSync(this.deps.scratchDir, { recursive: true });
@@ -844,7 +873,11 @@ export class MechaExecutor {
     const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}（工作目录 ${cwd.real}）`;
     const summary =
       tier === 'T2' ? `${EXEC_T2_DISCLOSURE}\n${baseSummary}` : baseSummary;
-    const denied = await this.requireConfirm(envelope, tier, summary);
+    const denied = await this.requireConfirm(envelope, tier, summary, {
+      opType: 'exec.run',
+      tier,
+      programAbsPath: absPath,
+    });
     if (denied) return denied;
 
     const child = spawn(absPath, op.argv.slice(1), {

@@ -61,10 +61,12 @@ export interface SetupIo {
 }
 
 /** fs 注入面（测试内存替身；缺省真实 fs）。realpathSync 必须返回**规范形**
- * （缺省 = path-guard.realpathCanonical：win32 native、posix realpath）。 */
+ * （缺省 = path-guard.realpathCanonical：win32 native、posix realpath）。
+ * statSync（I4）：程序真身的占位桩探测（0 字节 / WindowsApps 别名归宿）。 */
 export interface SetupFs {
   existsSync(path: string): boolean;
   realpathSync(path: string): string;
+  statSync(path: string): { size: number };
   mkdirSync(path: string, opts: { recursive: true }): unknown;
   writeFileSync(path: string, data: string): unknown;
   chmodSync(path: string, mode: number): unknown;
@@ -138,6 +140,7 @@ function makeDefaultIo(): Required<SetupIo> {
 const defaultFs: SetupFs = {
   existsSync: (p) => fs.existsSync(p),
   realpathSync: (p) => realpathCanonical(p),
+  statSync: (p) => fs.statSync(p),
   mkdirSync: (p, opts) => fs.mkdirSync(p, opts),
   writeFileSync: (p, data) => fs.writeFileSync(p, data, 'utf8'),
   chmodSync: (p, mode) => fs.chmodSync(p, mode),
@@ -156,7 +159,11 @@ function defaultExec(cmd: string, args: string[]): Promise<{ stdout: string }> {
 const WIN32 = process.platform === 'win32';
 
 /** 探测单个程序真身（R4）：where/which 首个匹配行 → 绝对路径 → 规范形
- * realpath。任何一环不成立 → 跳过并提示（可稍后在网页添加），返回 null。 */
+ * realpath。占位桩防线（I4，final review）：0 字节文件（Windows Store 的
+ * AppExecution alias 桩——`where python` 会命中它但一跑就弹商店）与
+ * realpath 落在 `WindowsApps` 段下的重parse别名归宿都不可注册——注册进去
+ * 只会让每次 exec 撞占位符。任何一环不成立 → 跳过并提示（可稍后在网页
+ * 添加），返回 null。 */
 async function probeProgram(
   name: string,
   execImpl: ExecImpl,
@@ -165,6 +172,10 @@ async function probeProgram(
 ): Promise<Mecha.MechaProgramEntry | null> {
   const skip = (): null => {
     note(`未找到 ${name}，已跳过（可稍后在网页添加）`);
+    return null;
+  };
+  const skipStub = (): null => {
+    note('探测到 Windows Store 占位桩，已跳过（请安装真实 Python 或稍后在网页添加）');
     return null;
   };
   let stdout: string;
@@ -178,11 +189,21 @@ async function probeProgram(
     .map((l) => l.trim())
     .find((l) => l !== '');
   if (first === undefined || !isAbsolute(first)) return skip();
+  let absPath: string;
   try {
-    return { name, absPath: fsImpl.realpathSync(first) };
+    absPath = fsImpl.realpathSync(first);
   } catch {
     return skip();
   }
+  // I4 占位桩探测：0 字节桩先查（主判据）；再查 realpath 归宿在 WindowsApps
+  // 段下（重parse别名未被展开时的兜底）。stat 不可判定 → 按跳过处理。
+  try {
+    if (fsImpl.statSync(absPath).size === 0) return skipStub();
+  } catch {
+    return skip();
+  }
+  if (absPath.split(/[\\/]/).includes('WindowsApps')) return skipStub();
+  return { name, absPath };
 }
 
 /** 目录白名单勾选（交互契约见文件头）。返回去重后的规范形绝对路径列表。 */

@@ -4,6 +4,7 @@ import { Mecha } from '@clawrent/protocol';
 import { MECHA_PACKAGE_VERSION } from './constants.js';
 import {
   MechaExecutor,
+  type MechaConfirmMeta,
   type MechaConfirmSettlement,
   type ExecutorLogger,
 } from './ops/executor.js';
@@ -50,10 +51,19 @@ import type { ProvenanceStore } from './enforcement/provenance.js';
  *     清计时器；超时/断链取消以 `approved:false + confirmEnd 标记` 结算
  *     （MechaConfirmSettlement），executor 据标记产出 CONFIRM_TIMEOUT /
  *     IO_ERROR 'link down' 结果。原始回调的拒绝（人拒）原样透传。
+ *     T1-remember（I3 fix，spec §5.3）：exec.run + T1 的批复携带
+ *     `remember:true` → 程序真身入会话记忆集，本会话内同程序 exec 免确认
+ *     （不发 confirmRequest，留 confirmed_remembered 行）；T2 永不入集，
+ *     集随终局清空。
  *  9. op 串行（R15 裁定）：executeOp 以 in-flight promise 链一次只放一个 op
  *     进执行器——审计线性（logOp 顺序 = 执行顺序），T10 read-race 残面收口。
  *     守卫（idle / linkDown / paused）在入队前后各查一次：入队前拒不占队位，
  *     出队时复查保证终局/断链后排队的 op 绝不落到已弃执行器上。
+ * 10. 信封绑定（I1 fix）：op 信封的 sessionId 必须与在会 sessionId 一致
+ *     （accept 置位、teardown 复位）——错会话信封在入口即 IO_ERROR
+ *     'session mismatch' 拒回（不进执行流、不占队位），拒收行落当前会话
+ *     日志（logLifecycle 'op_rejected_session_mismatch'；信封 sessionId 无
+ *     合法审计落点，op_request 锚不可落）。
  *
  * 会话策略的生命周期归 session 所有：构造 deps 只含 executor 的工厂依赖
  * （provenance/confirm/log/onChunk，policy 与 scratchDir 由 session 按注入的
@@ -126,14 +136,25 @@ export interface MechaSessionEvents {
 
 /** session 构造依赖：executor 的工厂依赖（policy/scratchDir 由 session 逐
  * 会话装配，见文件头）。confirm 为原始接线（T16 接中继/平台转发），session
- * 自行包装超时与断链取消。onPolicyUpdate 结构回调（ExecutorLogger 同风格）。 */
+ * 自行包装超时与断链取消；第二参数 meta（I3 fix）为 executor 在确认发起处
+ * 附带的判级产物（op 类型 + tier + exec 程序真身），供 T1-remember 快速
+ * 放行——不出现在 MechaConfirmRequest 线形上。onPolicyUpdate 结构回调
+ * （ExecutorLogger 同风格）。 */
 export interface MechaSessionDeps {
   /** 溯源持久表（单写者，R6 裁定——daemon 级单实例）。即焚不清此表。 */
   provenance: ProvenanceStore;
   /** 原始确认回调：人审通道。session 包装后注入 executor。 */
-  confirm: (req: Mecha.MechaConfirmRequest) => Promise<Mecha.MechaConfirmResult>;
+  confirm: (
+    req: Mecha.MechaConfirmRequest,
+    meta?: MechaConfirmMeta,
+  ) => Promise<Mecha.MechaConfirmResult>;
   /** 行车记录（R8 最小接口；T13 DashcamLogger 结构满足）。 */
   log: ExecutorLogger;
+  /** 会话级生命周期落账（I1/I3 fix，可选）：op_rejected_session_mismatch
+   * （错会话信封的拒收留痕——锚行按信封 sessionId 寻文件，陌生会话无合法
+   * 落点）与 confirmed_remembered（T1-remember 免确认的标记行）经此入当前
+   * 会话日志。缺省 = 无处可落时静默跳过（结果不受影响）。 */
+  logLifecycle?: (event: string, detail?: unknown) => void;
   /** exec.run 流式回传 sink（透传 executor；缺省丢弃）。 */
   onChunk?: (chunk: Mecha.MechaExecChunk) => void;
   /** policy.update 处置回调（applied 含被拒的更新——T13/T16 接线记账）。 */
@@ -171,10 +192,13 @@ function emptyPolicy(): Mecha.MechaPolicy {
   };
 }
 
-/** sessionId 硬校验：纯路径段（即焚 rmSync 目标的构成件，逃逸零容忍）。 */
+/** sessionId 硬校验：纯路径段（即焚 rmSync 目标的构成件，逃逸零容忍）；
+ * 冒号一并拒——NTFS ADS 流名（`sess:ads` 参与构造的日志名/即焚路径在
+ * win32 上可写进交替数据流，I1 final review 同规则收口）。 */
 function isValidSessionId(id: string): boolean {
   if (id === '' || id === '.' || id === '..') return false;
-  return !id.includes('/') && !id.includes('\\');
+  if (id.includes('/') || id.includes('\\') || id.includes(':')) return false;
+  return true;
 }
 
 /**
@@ -224,6 +248,16 @@ export class MechaSession {
   private activePolicy: Mecha.MechaPolicy | null = null;
   private scratchDirValue: string | null = null;
   private executor: MechaExecutor | null = null;
+
+  /** 在会 sessionId（I1 fix）：op 信封绑定的比对基线——accept 置位、
+   * teardown 复位。错会话信封的 op 在 executeOp 入口即拒，绝不落到本会话
+   * 的策略/执行器/审计流上。 */
+  private activeSessionId: string | null = null;
+
+  /** T1-remember 记忆集（I3 fix，spec §5.3）：本会话内消费者勾选「不再
+   * 确认」的 exec 程序真身（matchProgram 产物 absPath）。仅 T1 exec 命中；
+   * T2（上传脚本/内联/溯源红）永不入集。集随终局清空——新 offer = 新集。 */
+  private readonly rememberedPrograms = new Set<string>();
 
   /** 断链闸位（armed/paused 之上；宽限计时器在跑即为 true）。 */
   private linkDown = false;
@@ -311,10 +345,11 @@ export class MechaSession {
     // 会话即策略：以 offered policy 构造本会话专属执行器（终局即弃）。
     // policy 取值器每 op 现取——policy.update tighten 立即生效的前提。
     this.activePolicy = frame.policy;
+    this.activeSessionId = frame.sessionId;
     this.executor = new MechaExecutor({
       policy: () => this.activePolicy ?? emptyPolicy(),
       provenance: this.deps.provenance,
-      confirm: (req) => this.wrappedConfirm(req),
+      confirm: (req, meta) => this.wrappedConfirm(req, meta),
       log: this.deps.log,
       scratchDir,
       onChunk: this.deps.onChunk,
@@ -419,10 +454,12 @@ export class MechaSession {
     } catch (err) {
       burnError = err instanceof Error ? err.message : String(err);
     }
-    // token 作废：executor 弃用、policy 失活（之后新 offer 可建全新会话
-    // ——同机服务循环不受本次终局影响）。
+    // token 作废：executor 弃用、policy 失活、信封绑定与 T1-remember 集清空
+    //（之后新 offer 可建全新会话——同机服务循环不受本次终局影响）。
     this.executor = null;
     this.activePolicy = null;
+    this.activeSessionId = null;
+    this.rememberedPrograms.clear();
     this.scratchDirValue = null;
     this.stateValue = 'idle';
     this.emit('ended', burnError === undefined ? { reason } : { reason, burnError });
@@ -516,6 +553,25 @@ export class MechaSession {
    * / 'link down' 拒回）。executor 契约「每 op 必有结果」，此处无异常路径。
    */
   async executeOp(envelope: Mecha.MechaOpEnvelope): Promise<Mecha.MechaOpResult> {
+    // 信封绑定门（I1 fix，先于守卫与队列——错会话的 op 不进本会话的执行
+    // 流、不占队位）。锚行（op_request）归 executor 按信封 sessionId 寻
+    // 文件，陌生会话无合法落点（fail-loud 会抛）——此处不落锚，改在**当前
+    // 会话**日志留一条 lifecycle 拒收行，随后以 IO_ERROR 'session mismatch'
+    // 拒回（零执行、零确认、零副作用）。
+    if (
+      this.activeSessionId !== null &&
+      envelope.sessionId !== this.activeSessionId
+    ) {
+      try {
+        this.deps.logLifecycle?.('op_rejected_session_mismatch', {
+          opId: envelope.opId,
+          claimedSessionId: envelope.sessionId,
+        });
+      } catch {
+        // 审计尽力而为：日志故障不改变拒收结果
+      }
+      return sessionFail(envelope.opId, 'session mismatch');
+    }
     const immediate = this.opGate(envelope.opId);
     if (immediate !== null) return immediate;
 
@@ -548,11 +604,18 @@ export class MechaSession {
 
   /**
    * 包装原始 confirm 回调（executor.deps.confirm 实体）：
+   *  - T1-remember 快速放行（I3 fix，spec §5.3「本会话不再确认」的兑现）：
+   *    meta 表明本次确认是 exec.run + T1 且程序真身在记忆集 → 不发
+   *    mecha.confirmRequest、无 300s 窗口，直接 approved 结算，并在当前
+   *    会话日志留 confirmed_remembered 生命周期行。T2 永不命中——meta.tier
+   *    由 executor 判级产物携带，computeTier 照常先跑、其 T2 判定先于本
+   *    检查（requireConfirm 只在判级后调用）；
    *  - 断链/无会话态：不经通道，直接以 `approved:false + link_down` 结算；
    *  - 在途：Promise.race 原始回调与 policy.limits.confirmTimeoutMs 计时
    *    （默认 300s）——结算即清计时器；超时以 `approved:false + timeout`
    *    结算（executor 据标记产出 CONFIRM_TIMEOUT）；
    *  - 原始回调先答：原样透传（approved / 人拒 CONFIRM_DENIED 原口径）；
+   *    approved+remember 且本次是 exec.run T1 → 程序真身入记忆集（终局清）；
    *  - 原始回调抛错（通道故障）：透传给 executor（execute 兜底 IO_ERROR，
    *    与 Task 10/11 既有口径一致——通道故障 ≠ 人拒）；
    *  - 断链/终局收割：所有 pending 以 `approved:false + link_down` 结算——
@@ -560,7 +623,30 @@ export class MechaSession {
    */
   private wrappedConfirm(
     req: Mecha.MechaConfirmRequest,
+    meta?: MechaConfirmMeta,
   ): Promise<MechaConfirmSettlement> {
+    if (
+      this.linkDown === false &&
+      this.executor !== null &&
+      meta !== undefined &&
+      meta.tier === 'T1' &&
+      meta.opType === 'exec.run' &&
+      meta.programAbsPath !== undefined &&
+      this.rememberedPrograms.has(meta.programAbsPath)
+    ) {
+      try {
+        this.deps.logLifecycle?.('confirmed_remembered', {
+          opId: req.opId,
+          program: meta.programAbsPath,
+        });
+      } catch {
+        // 审计尽力而为：免确认放行不因日志故障改道
+      }
+      // 结算通知（口径不变：每条会话裁定的结算路径恰通知一次——daemon 桥
+      // 无此表项，通知扑空即静默）
+      this.deps.onConfirmSettled?.(req.requestId, 'approved');
+      return Promise.resolve({ requestId: req.requestId, approved: true });
+    }
     if (this.linkDown || this.executor === null) {
       return Promise.resolve({
         requestId: req.requestId,
@@ -598,8 +684,21 @@ export class MechaSession {
         settle: (result, outcome) => finish(outcome, () => resolve(result)),
       });
       this.deps.confirm(req).then(
-        (r) =>
-          finish(r.approved ? 'approved' : 'denied', () => resolve({ ...r })),
+        (r) => {
+          // I3：approved + remember 且本次是 exec.run T1 → 程序真身入记忆集
+          //（会话内后续同程序 exec 免确认；T2 不入集；终局清空）
+          if (
+            r.approved &&
+            r.remember === true &&
+            meta !== undefined &&
+            meta.tier === 'T1' &&
+            meta.opType === 'exec.run' &&
+            meta.programAbsPath !== undefined
+          ) {
+            this.rememberedPrograms.add(meta.programAbsPath);
+          }
+          finish(r.approved ? 'approved' : 'denied', () => resolve({ ...r }));
+        },
         (err) =>
           finish(
             null,
