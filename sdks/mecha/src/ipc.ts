@@ -59,18 +59,26 @@ export type IpcResponse = IpcOkResponse | IpcErrorResponse;
 /** status 请求的强类型响应面（供 CLI/测试窄化）。 */
 export type MechaStatusIpcResponse = { ok: true } & MechaStatus;
 
-/** CLI 默认超时：~3s（connect + 响应同用一口钟——一连接一请求）。 */
+/** CLI 默认超时：~3s。connect 与等响应是先后两段，各按 timeoutMs 计
+ * （最坏 ~2×3s）；一连接一请求，无累计。 */
 export const DEFAULT_IPC_TIMEOUT_MS = 3000;
 
 const WIN_PIPE_PREFIX = '\\\\.\\pipe\\';
-/** profile 允许集：字母数字开头，其后字母数字与 `._-`，≤64 字符。分隔符、
- * 空格、win32 管道名特殊字符（`:*?"<>|` 等）全不在集内；另禁 `..` 子串。 */
+/** profile 允许集：字母数字开头，其后字母数字与 `._-`，≤64 字符——字符集
+ * 卫生门（分隔符/空格/win32 管道名特殊字符/`..` 不出现）。**不是** sun_path
+ * 预算：完整 UDS 路径的长度界由 assertValidPipeName（POSIX ≤103 字节）兜。 */
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 单行（一请求）字节上限：防恶意/异常超长行泼内存。 */
 const MAX_LINE_CHARS = 64 * 1024;
+/** sockaddr_un.sun_path 预算（不含 NUL）：macOS 104 含 NUL → 路径 ≤103，
+ * Linux 108 含 NUL → ≤107；取保守口径 103 对全部 POSIX 生效（编译/运行
+ * 双平台同值，超预算的 bind() 报 EINVAL 难排查——在端点门响亮拒绝）。 */
+const POSIX_SUN_PATH_MAX_BYTES = 103;
 
 /** profile 清洗门（T5 遗留补齐）：空、路径分隔符（/ 与 \）、`..`、win32
- * 管道名特殊字符、超长（UDS sun_path 预算）一律拒绝。 */
+ * 管道名特殊字符、超长（>64，端点名卫生）一律拒绝。完整 UDS 路径的
+ * sun_path 长度预算由 assertValidPipeName 兜（本函数只见 profile 片段，
+ * 拼不进 home 前缀，管不了总长）。 */
 export function assertValidProfile(profile: string): void {
   if (typeof profile !== 'string' || profile.length === 0) {
     throw new TypeError('机甲 profile 不能为空');
@@ -127,6 +135,14 @@ export function assertValidPipeName(pipeName: string): void {
     }
     if (pipeName.split('/').includes('..')) {
       throw new TypeError(`POSIX UDS 路径含 ".." 段：${JSON.stringify(pipeName)}`);
+    }
+    // sun_path 预算兜底（见 POSIX_SUN_PATH_MAX_BYTES）：profile 字符集门只管
+    // 片段卫生，拦不住「合法 profile × 长 home 前缀」拼出的超长整路径——
+    // 那种路径能过校验却在 bind() 处爆 EINVAL，此处按 UTF-8 字节响亮拒绝。
+    if (Buffer.byteLength(pipeName) > POSIX_SUN_PATH_MAX_BYTES) {
+      throw new TypeError(
+        `POSIX UDS 路径超长（${Buffer.byteLength(pipeName)} 字节 > ${POSIX_SUN_PATH_MAX_BYTES} 预算）：${JSON.stringify(pipeName)}`,
+      );
     }
   }
 }

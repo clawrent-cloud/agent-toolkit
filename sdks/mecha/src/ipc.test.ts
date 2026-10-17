@@ -317,6 +317,11 @@ describe('端点名形态校验（构造/调用即炸，fail-fast）', () => {
       expect(() => assertValidPipeName('rel/x.sock')).toThrow(); // 相对路径
       expect(() => assertValidPipeName('/a/../b.sock')).toThrow(); // ".." 段
       expect(() => assertValidPipeName('/tmp/x.sock')).not.toThrow();
+      // sun_path 预算（≤103 字节，macOS 保守口径）：103 恰好过、104 拒
+      expect(() => assertValidPipeName(`/${'x'.repeat(102)}`)).not.toThrow(); // 1+102=103B
+      expect(() => assertValidPipeName(`/${'x'.repeat(103)}`)).toThrow(); // 1+103=104B
+      // 多字节按 UTF-8 字节计（60 汉字 = 180B；若误用 .length=61 会漏拦）
+      expect(() => assertValidPipeName(`/${'机'.repeat(60)}`)).toThrow();
     } finally {
       Object.defineProperty(process, 'platform', { value: original });
     }
