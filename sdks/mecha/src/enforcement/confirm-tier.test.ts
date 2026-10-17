@@ -584,6 +584,44 @@ describe('computeTier（confirm-tier 判级）', () => {
     ).toBe('T1');
   });
 
+  it('解释器内联扩充：node -p 求值打印旗标与 -e 组合簇（-pe）→ T2；非内联簇 T1', () => {
+    const ws = makeWorkspace();
+    // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标
+    expect(
+      computeTier(execOp(['node', '-p', '1+1'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 组合簇 -pe（= -p + -e，实测可执行输出 4）
+    expect(
+      computeTier(execOp(['node', '-pe', '1+1'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 负对照：-v 仅版本无求值；无簇无旗标的普通执行仍 T1
+    expect(
+      computeTier(execOp(['node', '-v'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    expect(
+      computeTier(execOp(['node', join(ws, 'app.js')], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    // e 簇仅 node 启用——不外溢到 python（其短旗标语义不同）
+    expect(
+      computeTier(execOp(['python', '-pe', 'x'], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────
 
   it('schema 外 op type：响亮抛错（穷尽哨兵，编码错误不静默判级）', () => {

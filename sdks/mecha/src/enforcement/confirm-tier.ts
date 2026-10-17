@@ -50,8 +50,11 @@ import type { ProgramGuardResult } from './program-guard.js';
  *    裁定扩充，经典 LOLBin 内联入口）；
  *  - bash/sh/zsh 另认单杠组合短旗标簇含小写 `c`（`-lc`/`-cl`/`-ic`…——簇内
  *    有 c 即消费下一参数为命令串；大小写敏感，`-C` 是 noclobber 不是内联；
- *    仅此三解释器启用——cmd/powershell 的多字符旗标语义不同，不做逐字解析；
  *    review 裁定扩充）；
+ *  - node 另认 `-p` 求值打印旗标（实测 `node -p '1+1'` → 2——本身就是内联
+ *    入口，review 第二轮裁定）与单杠簇含 `e`（`-pe` = -p + -e，实测可执行；
+ *    大小写敏感；仅 node 启用 e 簇、仅 bash/sh/zsh 启用 c 簇——cmd/powershell
+ *    的多字符旗标语义不同，不做逐字解析）；
  *  除此不拆组合、不做前缀/子串猜测；代价是旗标成为子命令参数时误红（如
  *  `python script.py -c`），落在宁可误红不可漏红的方向。
  *
@@ -118,16 +121,23 @@ interface InterpreterInlineSpec {
   /** win32 原生旗标解析大小写不敏感（powershell/cmd——PowerShell 参数绑定
    * 在所有宿主平台折叠大小写；POSIX 解释器一律敏感）。 */
   caseInsensitive: boolean;
-  /** POSIX 组合短旗标簇（review 裁定 3，仅 bash/sh/zsh）：单杠多字符簇含
-   * 小写 `c` 即视为 `-c`（`-lc`/`-cl`/`-ic`…——簇内有 c 即消费下一参数为
-   * 命令串）。cmd/powershell 多字符旗标语义不同，不做逐字解析。 */
-  shortFlagClusterC?: boolean;
+  /** POSIX 组合短旗标簇（review 裁定 3/第二轮）：单杠多字符簇含该字符即视
+   * 为内联（bash/sh/zsh → `c`：`-lc`/`-cl`/`-ic`…——簇内有 c 即消费下一参数
+   * 为命令串；node → `e`：`-pe` = -p 求值打印 + -e 求值，实测真实内联入口）。
+   * 大小写敏感；仅注明的解释器启用——cmd/powershell 多字符旗标语义不同，
+   * 不做逐字解析。 */
+  shortFlagClusterChar?: 'c' | 'e';
 }
 
 const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   python: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
   python3: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
-  node: { flags: ['-e', '--eval', '--expression'], caseInsensitive: false },
+  // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标（review 第二轮裁定）
+  node: {
+    flags: ['-e', '--eval', '--expression', '-p'],
+    caseInsensitive: false,
+    shortFlagClusterChar: 'e',
+  },
   powershell: {
     flags: ['-command', '-encodedcommand'],
     prefixes: ['-enc'],
@@ -138,9 +148,9 @@ const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
     prefixes: ['-enc'],
     caseInsensitive: true,
   },
-  bash: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
-  sh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
-  zsh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterC: true },
+  bash: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
+  sh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
+  zsh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
   // /ce 旧缩写被 /c 前缀吸收（review 裁定 Critical 1 折叠 Minor 7）
   cmd: { flags: ['/c', '/k'], prefixes: ['/c', '/k'], caseInsensitive: true },
 };
@@ -170,8 +180,15 @@ function interpreterEntry(absPath: string): InterpreterInlineSpec | undefined {
   return INTERPRETER_INLINE[INTERPRETER_ALIASES[base] ?? base];
 }
 
+/** 组合短旗标簇正则（单杠、次字符非杠、簇内含目标字符；大小写敏感——
+ * POSIX/node 旗标解析敏感，`-C` 是 noclobber、`-E` 非 eval）。 */
+const CLUSTER_RE: Record<'c' | 'e', RegExp> = {
+  c: /^-[^-]*c/,
+  e: /^-[^-]*e/,
+};
+
 /** 解释器内联判定：argv[1..] 任一元素命中该解释器的内联旗标（精确、
- * `flag='` equals 形、`-enc…` 缩写族、POSIX 组合簇含 c——见清单注释）。 */
+ * `flag='` equals 形、无歧义前缀族、组合短旗标簇——见清单注释）。 */
 function isInterpreterInline(absPath: string, argv: string[]): boolean {
   const entry = interpreterEntry(absPath);
   if (!entry) return false;
@@ -183,7 +200,12 @@ function isInterpreterInline(absPath: string, argv: string[]): boolean {
       if (token === flag || token.startsWith(`${flag}=`)) return true;
     }
     if (entry.prefixes?.some((p) => token.startsWith(p))) return true;
-    if (entry.shortFlagClusterC && /^-[^-]*c/.test(token)) return true;
+    if (
+      entry.shortFlagClusterChar !== undefined &&
+      CLUSTER_RE[entry.shortFlagClusterChar].test(token)
+    ) {
+      return true;
+    }
   }
   return false;
 }
