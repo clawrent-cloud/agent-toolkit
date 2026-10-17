@@ -362,6 +362,59 @@ describe('DeviceClient × mock relay（真实 socket）', () => {
     expect(hello2.deviceId).toBe('mecha-test-001');
   }, 15_000);
 
+  it('重连窗口期 connect() 不另起拨号、不过早兑现：恢复后恰好一条新连接（T16 Step 0 竞态回归）', async () => {
+    const stack = await makeStack(); // backoff 50ms——重连循环高频重试
+    let connections = 0;
+    // 服务端连接计数（测试侧挂监听，不动 mock relay 契约）——双拨号竞态的判据
+    stack.relay.server.on('connection', () => {
+      connections += 1;
+    });
+    const port = Number(new URL(stack.relay.url).port);
+
+    await stack.relay.close();
+    await stack.relay.driver.waitFor(
+      () => (stack.linkEvents.includes(false) ? true : undefined),
+      3_000,
+    );
+
+    // relay 仍未恢复：此刻 client 必处于「退避计时器挂起 / 后台拨号在途 /
+    // 濒死 socket 未清场」三态之一。connect() 既不得另起拨号（双拨号竞态），
+    // 也不得过早兑现（链路仍断）——观察窗内必须保持未结算。
+    const reconnecting = stack.client.connect();
+    const duplicate = stack.client.connect(); // 重复调用与首次同命运
+    let settled: boolean | null = null;
+    void reconnecting.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = false;
+      },
+    );
+    // 观察窗（负向断言需要有限观察期，150ms ≈ 3 个退避周期）：链路仍断，
+    // connect() 的 promise 既不兑现也不拒绝
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(settled).toBeNull();
+
+    const relay2 = await startMockRelay(port); // 同端口重启
+    extraRelays.push(relay2);
+    relay2.server.on('connection', () => {
+      connections += 1;
+    });
+    // 计数从挂监听起算（初始连接发生在挂监听前）：恢复恰产生 1 条新连接
+    await stack.relay.driver.waitFor(
+      () => (connections >= 1 ? true : undefined),
+      5_000,
+    );
+    await reconnecting; // 重连拨通（welcome 到手）才兑现
+    await duplicate;
+    // 安静窗口：若双拨号竞态存在，latest-wins 终止会驱动连接数持续增长；
+    // 修复后计数恒为 1（仅恢复那一条）
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(connections).toBe(1);
+    expect(stack.linkEvents).toEqual([true, false, true]);
+  }, 20_000);
+
   it('心跳按 30s 默认发送且被 ack 时链路稳定（heartbeatMs 覆盖加速验证）', async () => {
     const stack = await makeStack({ heartbeatMs: 30 });
     await stack.relay.driver.waitFor(() => {

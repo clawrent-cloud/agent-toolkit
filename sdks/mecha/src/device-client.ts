@@ -115,8 +115,14 @@ export class DeviceClient {
   /** 在途握手（welcome 归属裁决——迟到/重复 welcome 忽略）。 */
   private handshake: { ws: WebSocket; finish: (err: Error | null) => void } | null =
     null;
-  /** connect() 在途 promise（重复 connect 复用同一次拨号）。 */
+  /** connect() 的在途 promise（重复 connect 复用同一次拨号）。 */
   private connecting: Promise<void> | null = null;
+  /** 挂等链路恢复的 connect() 调用方（重连窗口期不另起拨号，T16 Step 0）：
+   * welcome 到手统一兑现，close() 统一拒绝。 */
+  private readonly linkWaiters = new Set<{
+    resolve: () => void;
+    reject: (err: Error) => void;
+  }>();
   /** 心跳 ack 账（连续 2 次无 ack 判死）。 */
   private awaitingAck = false;
   private missedAcks = 0;
@@ -137,15 +143,30 @@ export class DeviceClient {
   /**
    * 拨号并完成 hello/welcome 握手。首次失败（连接错误 / 10s 无 welcome）
    * → promise 拒绝；但重连循环已在后台接管（「服务未起」是守护进程开机
-   * 的常态而非终局——拒绝只面向首调方的诊断面）。重复 connect() 复用在途
-   * 拨号；已连接时兑现即返。close() 后调用拒绝。
+   * 的常态而非终局——拒绝只面向首调方的诊断面）。重复调用语义（竞态守卫，
+   * T16 Step 0）：
+   *  - 在途 initial 拨号 → 复用同一 promise（调用方同命运）；
+   *  - 链路已就绪（welcome 到手）→ 兑现即返；
+   *  - 重连机器在途（退避计时器挂起 / 后台拨号进行中 / 濒死 socket 未清场）
+   *    → **不另起拨号**（否则与计时器触发的后台拨号构成双拨号竞态：两个
+   *    socket 抢 this.ws、僵尸 socket 的 close 再驱动一轮重连），也不兑现
+   *    （链路仍断）——挂等链路恢复：重连拨通（welcome 到手）即兑现，
+   *    close() 则拒绝。
+   * close() 后调用拒绝。
    */
   connect(): Promise<void> {
     if (this.closed) {
       return Promise.reject(new Error('DeviceClient.connect: client is closed'));
     }
-    if (this.ws !== null) {
-      return this.connecting ?? Promise.resolve();
+    if (this.connecting !== null) return this.connecting;
+    // 链路就绪的唯一判据是 linkUp（welcome 到手置位）——旧 `ws !== null`
+    // 判据在「后台拨号已 resolve、socket 尚未走完 close 清场」的窗口会
+    // 过早兑现（链路可能仍断）。
+    if (this.linkUp) return Promise.resolve();
+    if (this.reconnectTimer !== null || this.ws !== null) {
+      return new Promise<void>((resolve, reject) => {
+        this.linkWaiters.add({ resolve, reject });
+      });
     }
     const dial = this.dial(true);
     this.connecting = dial;
@@ -172,6 +193,7 @@ export class DeviceClient {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.settleLinkWaiters(false); // 挂等的 connect() 调用方以拒绝收场
     const ws = this.ws;
     this.ws = null;
     if (ws !== null) {
@@ -348,9 +370,21 @@ export class DeviceClient {
     this.handshake = null;
     this.linkUp = true;
     this.reconnectAttempt = 0; // 长稳链路偶发抖动从 1s 重新爬坡
+    this.settleLinkWaiters(true); // 挂等的 connect() 调用方随链路恢复兑现
     this.startHeartbeat();
     this.notifyLink(true);
     finish(null);
+  }
+
+  /** 统一收口挂等的 connect() 调用方（welcome → 兑现；close → 拒绝）。 */
+  private settleLinkWaiters(up: boolean): void {
+    if (this.linkWaiters.size === 0) return;
+    const waiters = [...this.linkWaiters];
+    this.linkWaiters.clear();
+    for (const waiter of waiters) {
+      if (up) waiter.resolve();
+      else waiter.reject(new Error('DeviceClient.connect: client is closed'));
+    }
   }
 
   // ── 心跳（2 missed ack 判死）──────────────────────────────────────────────
@@ -384,6 +418,12 @@ export class DeviceClient {
 
   private scheduleReconnect(): void {
     if (this.closed) return;
+    // 竞态守卫（T16 Step 0）：旧计时器先撤再排新——两个 socket 的 close 相继
+    // 触发本函数时，覆写不清理会留下双计时器 → 双拨号 → 双活连接。
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const attempt = this.reconnectAttempt + 1;
     this.reconnectAttempt = attempt;
     const delay =
