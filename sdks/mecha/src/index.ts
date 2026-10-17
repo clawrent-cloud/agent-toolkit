@@ -10,3 +10,4 @@ export * from './logging.js';
 export * from './session.js';
 export * from './device-client.js';
 export * from './ipc.js';
+export * from './daemon.js';
