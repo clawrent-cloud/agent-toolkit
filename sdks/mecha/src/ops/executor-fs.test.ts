@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { Mecha } from '@clawrent/protocol';
 import { MechaExecutor, type ExecutorLogger } from './executor.js';
 import { ProvenanceStore } from '../enforcement/provenance.js';
+import { computeTier } from '../enforcement/confirm-tier.js';
 
 // ── fixture 基建（os.tmpdir，plan 全局约束）────────────────────────────────
 
@@ -398,6 +399,95 @@ describe('MechaExecutor file.upload（会话暂存区通道）', () => {
     // 穿越目标零落盘（scratch 上层与 tmpdir 根都不得出现 evil.txt）
     expect(fs.existsSync(join(h.ws, 'evil.txt'))).toBe(false);
     expect(fs.existsSync(join(dirname(h.ws), 'evil.txt'))).toBe(false);
+  });
+});
+
+describe('溯源收口（copy/move 目的地登记——红卡洗白链裁定）', () => {
+  it('upload → copy → 目的地入溯源；再 move → 新路径入溯源（旧条目 append-only 惰性，不 assert）', async () => {
+    const h = makeHarness();
+    await h.executor.execute(
+      env({ type: 'file.upload', name: 'a.txt', content: 'v1' }),
+    );
+
+    const cp = await h.executor.execute(
+      env(
+        { type: 'fs.copy', from: join(h.scratchDir, 'a.txt'), to: 'b.txt' },
+        'op-2',
+      ),
+    );
+    expect(cp.ok).toBe(true);
+    const b = join(h.realWs, 'b.txt');
+    expect(fs.readFileSync(b, 'utf8')).toBe('v1');
+    expect(h.provenance.isDriverAuthored(b)).toBe(true);
+
+    const mv = await h.executor.execute(
+      env({ type: 'fs.move', from: 'b.txt', to: 'c.txt' }, 'op-3'),
+    );
+    expect(mv.ok).toBe(true);
+    const c = join(h.realWs, 'c.txt');
+    expect(fs.readFileSync(c, 'utf8')).toBe('v1');
+    expect(h.provenance.isDriverAuthored(c)).toBe(true); // driver-authored 随内容走
+    // 旧路径 b 的登记按 append-only 设计保留（文件已不在，键惰性）——按裁定
+    // 只断言新路径
+    expect(fs.existsSync(b)).toBe(false);
+  });
+
+  it('非溯源源文件的 copy/move 也无条件登记目的地（误红方向 fail-safe）', async () => {
+    const h = makeHarness();
+    fs.writeFileSync(join(h.ws, 'plain.txt'), 'user content');
+
+    const cp = await h.executor.execute(
+      env({ type: 'fs.copy', from: 'plain.txt', to: 'copy.txt' }),
+    );
+    expect(cp.ok).toBe(true);
+    expect(h.provenance.isDriverAuthored(join(h.realWs, 'copy.txt'))).toBe(true);
+
+    const mv = await h.executor.execute(
+      env({ type: 'fs.move', from: 'plain.txt', to: 'moved.txt' }, 'op-2'),
+    );
+    expect(mv.ok).toBe(true);
+    expect(h.provenance.isDriverAuthored(join(h.realWs, 'moved.txt'))).toBe(true);
+  });
+
+  it('端到端判级：upload → copy 后，exec 新名经 computeTier 判 T2（红卡不因改名丢失）', async () => {
+    const h = makeHarness();
+    await h.executor.execute(
+      env({ type: 'file.upload', name: 'a.txt', content: 'v1' }),
+    );
+    await h.executor.execute(
+      env(
+        { type: 'fs.copy', from: join(h.scratchDir, 'a.txt'), to: 'b.txt' },
+        'op-2',
+      ),
+    );
+    const b = join(h.realWs, 'b.txt');
+
+    const tier = computeTier(
+      { type: 'exec.run', argv: ['python', b], cwd: h.ws },
+      {
+        program: { ok: true, absPath: 'python' },
+        provenance: (p) => h.provenance.isDriverAuthored(p),
+      },
+    );
+    expect(tier).toBe('T2');
+  });
+
+  it('目录 copy/move 不崩（目录无单内容哈希，不登记——残余面报告声明）', async () => {
+    const h = makeHarness();
+    fs.mkdirSync(join(h.ws, 'docs'));
+    fs.writeFileSync(join(h.ws, 'docs', 'x.txt'), 'x');
+
+    const cp = await h.executor.execute(
+      env({ type: 'fs.copy', from: 'docs', to: 'docs2' }),
+    );
+    expect(cp.ok).toBe(true);
+    expect(fs.existsSync(join(h.ws, 'docs2', 'x.txt'))).toBe(true);
+
+    const mv = await h.executor.execute(
+      env({ type: 'fs.move', from: 'docs2', to: 'docs3' }, 'op-2'),
+    );
+    expect(mv.ok).toBe(true);
+    expect(fs.existsSync(join(h.ws, 'docs3', 'x.txt'))).toBe(true);
   });
 });
 

@@ -28,7 +28,9 @@ import type { ProvenanceStore } from '../enforcement/provenance.js';
  *      （部分副作用零容忍）；
  *   4. 执行：一律作用于 path-guard 返回的 `real`（TOCTOU 契约，检查对象即
  *      操作对象，绝不拿输入字符串二次解析）；fs.write / file.upload 完成
- *      即 provenance.record(real, sha256)。
+ *      即 provenance.record(real, sha256)；fs.copy / fs.move 目的地同样入
+ *      溯源（洗白链收口裁定：upload → copy 改名 → exec 新名不得把 T2 红
+ *      卡洗成 T1）。
  *
  * fs.* 相对路径解析基座（Controller ruling R9，binding）：一律按**首个白名
  * 单目录**解析——「驾驶员的工作目录 = 首个白名单目录」的确定性心智模型，
@@ -406,7 +408,16 @@ export class MechaExecutor {
   }
 
   /** fs.move / fs.copy 共流：from/to 双双过 guard（分别真实化），确认后作用于
-   * 两个 real。value.path = 目的地 real（新产物的落点）。 */
+   * 两个 real。value.path = 目的地 real（新产物的落点）。
+   *
+   * 溯源收口（controller 洗白链裁定）：copy/move 在目的地新造了 driver 控制
+   * 内容的文件——不登记则 upload → copy 改名 → exec 新名即可把 T2 红卡洗成
+   * T1。故动作成功后**无条件** record 目的地（含非溯源源文件——误红方向
+   * fail-safe，与「宁可误红不可漏红」同谱系）。哈希口径 = 动作后读回目的地
+   * 内容求 sha256（「落盘即所证」，copy/move 同一口径，亦天然覆盖 from===to）。
+   * 目的地为目录时不登记（目录无单内容哈希；树内逐文件登记超出裁定文本，
+   * 残余面已在任务报告声明）。源路径旧条目按 append-only 设计保留（旧路径
+   * 已不存在，惰性键无害，不删）。 */
   private async transfer(
     op: OpOf<'fs.move'> | OpOf<'fs.copy'>,
     verb: '移动' | '复制',
@@ -425,6 +436,11 @@ export class MechaExecutor {
     );
     if (denied) return denied;
     act(from.real, to.real);
+    // 读回/登记失败（含 flush）有意上浮 → execute 兜底 IO_ERROR：文件已落
+    // 目的地但结果报败——审计链损伤响亮优于静默（同 fs.write 口径）。
+    if (fs.statSync(to.real).isFile()) {
+      this.deps.provenance.record(to.real, sha256Hex(fs.readFileSync(to.real)));
+    }
     return { opId: envelope.opId, ok: true, tier, value: { path: to.real } };
   }
 
