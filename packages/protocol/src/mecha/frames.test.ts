@@ -8,7 +8,7 @@ import {
   type MechaConfirmRequest,
   type MechaConfirmResult,
 } from './confirm.js';
-import { MECHA_LIMITS_DEFAULTS, type MechaPolicy } from './policy.js';
+import { MECHA_LIMITS_DEFAULTS, type CapabilityManifest, type MechaPolicy } from './policy.js';
 
 // Windows 开发机路径夹具:tmpdir 必为绝对路径(policy.test.ts 同款)
 const DIR = join(tmpdir(), 'mecha-frames-test');
@@ -16,6 +16,15 @@ const POLICY: MechaPolicy = {
   dirs: [DIR],
   programs: [{ name: 'node', absPath: join(DIR, 'node.exe') }],
   limits: MECHA_LIMITS_DEFAULTS,
+};
+
+// session.manifest 的最小合法清单(attach 后回执的本会话能力快照;
+// scratchDir 须绝对路径——AbsolutePathSchema 同 policy.test.ts 口径)。
+const MANIFEST: CapabilityManifest = {
+  sessionId: 'sess-1',
+  policy: POLICY,
+  mechaVersion: '0.1.1',
+  scratchDir: join(DIR, '.clawrent', 'scratch', 'sess-1'),
 };
 
 // 每种帧各一例合法样本(上行 = 设备 → 平台;下行 = 平台 → 设备)。
@@ -26,6 +35,7 @@ const legalFrames: MechaDeviceFrame[] = [
   { type: 'heartbeat' },
   { type: 'session.accept', sessionId: 'sess-1' },
   { type: 'session.reject', reason: 'device busy with another session' },
+  { type: 'session.manifest', sessionId: 'sess-1', manifest: MANIFEST },
   // 下行
   { type: 'device.welcome', serverTime: '2026-10-17T00:00:00.000Z' },
   {
@@ -149,6 +159,50 @@ describe('mecha device frames (MechaDeviceFrameSchema)', () => {
         driverAgentId: 'agent-driver-1',
         policy: badPolicy,
         expiresAt: '2026-10-17T00:05:00.000Z',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('session.manifest round-trip 保形(最小合法清单:sessionId/policy/mechaVersion/scratchDir)', () => {
+    const frame = { type: 'session.manifest', sessionId: 'sess-m1', manifest: MANIFEST };
+    const result = MechaDeviceFrameSchema.safeParse(frame);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual(frame);
+    }
+  });
+
+  it('session.manifest 缺 manifest / 缺 sessionId / manifest 形状非法(scratchDir 相对路径)拒绝', () => {
+    // 缺 manifest
+    expect(
+      MechaDeviceFrameSchema.safeParse({ type: 'session.manifest', sessionId: 'sess-m1' }).success,
+    ).toBe(false);
+    // 缺 sessionId
+    expect(MechaDeviceFrameSchema.safeParse({ type: 'session.manifest', manifest: MANIFEST }).success).toBe(
+      false,
+    );
+    // manifest 内 scratchDir 相对路径 → 连带拒绝(走 CapabilityManifestSchema)
+    const badManifest: Record<string, unknown> = {
+      ...MANIFEST,
+      scratchDir: '.clawrent/scratch/sess-m1',
+    };
+    expect(
+      MechaDeviceFrameSchema.safeParse({
+        type: 'session.manifest',
+        sessionId: 'sess-m1',
+        manifest: badManifest,
+      }).success,
+    ).toBe(false);
+    // manifest 内 policy dirs 相对路径 → 连带拒绝
+    const badDirsManifest: Record<string, unknown> = {
+      ...MANIFEST,
+      policy: { ...POLICY, dirs: ['Downloads'] },
+    };
+    expect(
+      MechaDeviceFrameSchema.safeParse({
+        type: 'session.manifest',
+        sessionId: 'sess-m1',
+        manifest: badDirsManifest,
       }).success,
     ).toBe(false);
   });

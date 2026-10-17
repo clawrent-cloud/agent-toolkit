@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MechaPolicySchema } from './policy.js';
+import { CapabilityManifestSchema, MechaPolicySchema } from './policy.js';
 
 /**
  * 机甲 v0 协议 —— 设备通道帧（device channel frames）。
@@ -57,6 +57,15 @@ const SessionAcceptFrameSchema = z.object({
 const SessionRejectFrameSchema = z.object({
   type: z.literal('session.reject'),
   reason: z.string(),
+});
+
+/** 设备 → 平台:attach 成功后上行本会话能力清单(CapabilityManifestSchema
+ * 全量——平台侧存档归真 + 驾驶员可见的会话能力快照)。顶层 sessionId 与
+ * manifest.sessionId 同值(顶层取 session.accept 同形,便于通道侧路由)。 */
+const SessionManifestFrameSchema = z.object({
+  type: z.literal('session.manifest'),
+  sessionId: z.string(),
+  manifest: CapabilityManifestSchema,
 });
 
 // ── 下行帧（平台 → 设备）──────────────────────────────────────────────────
@@ -119,6 +128,7 @@ export const MechaDeviceFrameSchema = z
     HeartbeatFrameSchema,
     SessionAcceptFrameSchema,
     SessionRejectFrameSchema,
+    SessionManifestFrameSchema,
     DeviceWelcomeFrameSchema,
     SessionOfferFrameSchema,
     SessionPauseFrameSchema,

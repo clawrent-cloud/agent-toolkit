@@ -12,7 +12,7 @@ import { join } from 'node:path';
 /** 包版本（attach manifest 的 mechaVersion 单一事实源；session Task 12 消费）。
  * 常量本体住本文件（避免模块互相依赖包入口 barrel），包入口 re-export 保持
  * 公共面不变。 */
-export const MECHA_PACKAGE_VERSION = '0.1.0';
+export const MECHA_PACKAGE_VERSION = '0.1.1';
 
 /** 机甲根目录：`~/.clawrent/mecha` */
 export function mechaHome(): string {

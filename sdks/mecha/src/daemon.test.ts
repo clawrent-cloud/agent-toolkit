@@ -142,6 +142,22 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     );
     expect(accept.type).toBe('session.accept');
 
+    // ①' session.manifest 上行帧（attach 后能力清单上报——平台侧存档归真,
+    // 驾驶员可见快照）。清单与行车记录开卷行同源（'attached' 事件）。
+    const manifestFrame = await relay.driver.waitFor(
+      () =>
+        relay.frameLog.find(
+          (f): f is Extract<Mecha.MechaDeviceFrame, { type: 'session.manifest' }> =>
+            f.type === 'session.manifest' && f.sessionId === 'sess-d16',
+        ),
+    );
+    expect(manifestFrame.manifest.sessionId).toBe('sess-d16');
+    expect(manifestFrame.manifest.policy.dirs[0]).toBe(deliver);
+    expect(manifestFrame.manifest.mechaVersion).toBe(MECHA_PACKAGE_VERSION);
+    expect(manifestFrame.manifest.scratchDir).toBe(
+      join(deliver, '.clawrent', 'scratch', 'sess-d16'),
+    );
+
     // ② scratch 建立（首白名单目录下）
     const scratch = join(deliver, '.clawrent', 'scratch', 'sess-d16');
     expect(fs.existsSync(scratch)).toBe(true);

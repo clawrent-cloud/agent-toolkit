@@ -146,8 +146,10 @@ const PY = WIN32 ? 'C:\\Python312\\python.exe' : '/usr/bin/python3';
 const NODE = WIN32 ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/bin/node';
 
 const HAPPY_ROUTES = {
-  '/auth/device/code': { status: 200, body: DEVICE_CODE_OK },
-  '/auth/device/token': {
+  // 端点统一口径（0.1.1）：路由 key 用完整 /api 前缀路径——device flow 若
+  // 回退到 0.1.0 的 /auth/device/... 拼法，后缀不匹配即响亮失败（未预期 URL）。
+  '/api/auth/device/code': { status: 200, body: DEVICE_CODE_OK },
+  '/api/auth/device/token': {
     status: 200,
     body: { deviceId: 'mecha-18', deviceToken: 'dtok-18' },
   },
@@ -187,6 +189,13 @@ describe('runSetup（setup 向导,T18）', () => {
     expect((post?.init.headers as Record<string, string>)['authorization']).toBe(
       'Bearer dtok-18',
     );
+    // 端点统一口径（0.1.1）：三端点全部落在 ${apiBase}/api/... 前缀下，
+    // 精确全 URL（device flow 两步 + 设备注册一步,次序如实）
+    expect(calls.map((c) => c.url)).toEqual([
+      'https://api.clawrent.test/api/auth/device/code',
+      'https://api.clawrent.test/api/auth/device/token',
+      'https://api.clawrent.test/api/mecha/devices',
+    ]);
     expect(JSON.parse(String(post?.init.body))).toEqual({
       deviceId: 'mecha-18',
       policy: result.policy,
@@ -317,8 +326,8 @@ describe('runSetup（setup 向导,T18）', () => {
     const { io } = scriptIo(['1', '', '1']);
     const { fsImpl } = memFs([DOCUMENTS]);
     const { fetchImpl } = mockFetchRoutes({
-      '/auth/device/code': { status: 200, body: DEVICE_CODE_OK },
-      '/auth/device/token': {
+      '/api/auth/device/code': { status: 200, body: DEVICE_CODE_OK },
+      '/api/auth/device/token': {
         status: 200,
         body: { deviceId: 'mecha-18', deviceToken: 'dtok-18' },
       },

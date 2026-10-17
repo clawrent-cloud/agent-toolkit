@@ -73,11 +73,14 @@ describe('runDeviceFlow（device flow 认证客户端,T17）', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await expect(flow).resolves.toEqual({ deviceId: 'mecha-777', deviceToken: 'dtok-xyz' });
 
+    // 端点统一口径（0.1.1）：全部平台端点落在 ${apiBase}/api/... 前缀下
+    //（0.1.0 的 /auth/device/... 缺 /api 前缀,与 setup 的 /api/mecha/devices
+    // 拼同一 apiBase 后不一致——已修）。
     expect(calls.map((c) => c.url)).toEqual([
-      'https://api.clawrent.test/auth/device/code',
-      'https://api.clawrent.test/auth/device/token',
-      'https://api.clawrent.test/auth/device/token',
-      'https://api.clawrent.test/auth/device/token',
+      'https://api.clawrent.test/api/auth/device/code',
+      'https://api.clawrent.test/api/auth/device/token',
+      'https://api.clawrent.test/api/auth/device/token',
+      'https://api.clawrent.test/api/auth/device/token',
     ]);
     const init = calls[0]?.init;
     expect(init?.method).toBe('POST');

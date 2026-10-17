@@ -310,6 +310,13 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     currentSessionId = manifest.sessionId;
     endedScratchRoot = dirname(manifest.scratchDir); // I2：终局惰性清扫的根
     since = Date.now();
+    // 能力清单上行（platform 侧存档归真 + 驾驶员可见快照）：attach 即报——
+    // 哑管道不缓存，断链窗口期的丢失归平台侧重连/对账面（与 op 族上行同口径）。
+    client.send({
+      type: 'session.manifest',
+      sessionId: manifest.sessionId,
+      manifest,
+    });
   });
 
   session.on('ended', (event: MechaSessionEndEvent) => {

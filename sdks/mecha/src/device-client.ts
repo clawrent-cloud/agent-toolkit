@@ -362,9 +362,9 @@ export class DeviceClient {
         this.safeWire(() => this.wire.policyUpdate(frame));
         return;
       default:
-        // device.hello / heartbeat / session.accept / session.reject / error：
-        // 上行帧回声与通道级错误，client 不处置（accept/reject 的产生与
-        // 发送归 session/daemon 侧）。
+        // device.hello / heartbeat / session.accept / session.reject /
+        // session.manifest / error：上行帧回声与通道级错误，client 不处置
+        //（accept/reject/manifest 的产生与发送归 session/daemon 侧）。
         return;
     }
   }
