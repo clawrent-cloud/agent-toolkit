@@ -40,19 +40,21 @@ import type { ProgramGuardResult } from './program-guard.js';
  * 位置（`python -u -c`、`cmd /d /c` 的旗标不在首位）：
  *  - 整 token 精确相等，或 `flag + '='` equals 形（`--eval=<code>`、
  *    `-Command=<code>`——review 裁定扩充）；
- *  - attached-value 前缀族（review 裁定 Critical 1/2）：`cmd` 的 `/c`/`/k`
- *    与 `python`/`python3` 的 `-c`——shell 粘连的 `/cdir`、`-cprint(1)` 以
- *    单 argv 元素抵达，精确匹配会漏红；前缀字母取各 CLI 独占段（cmd 无其他
- *    c/k 首开关、CPython 无其他 c 首短选项），零误红代价；node 的短旗标不
- *    吃粘连值（`-e<code>` 报 bad option，实测）故不加；
+ *  - attached-value 前缀族（review 裁定 Critical 1/2）：`cmd` 的 `/c`/`/k`/
+ *    `/r`（`/R` 为 /C 未记载别名，re-review 收口裁定）与 `python`/`python3`
+ *    的 `-c`——shell 粘连的 `/cdir`、`-cprint(1)` 以单 argv 元素抵达，精确
+ *    匹配会漏红；前缀字母取各 CLI 独占段（cmd 无其他 c/k/r 首开关、CPython
+ *    无其他 c 首短选项），零误红代价；node 的短旗标不吃粘连值（`-e<code>`
+ *    报 bad option，实测）故不加；
  *  - powershell/pwsh 另认 `-enc…` 无歧义缩写族（EncodedCommand——`-enc` 起
  *    的任何前缀都无歧义指向它，ExecutionPolicy 是 `-ex…` 无碰撞；review
  *    裁定扩充，经典 LOLBin 内联入口）；
  *  - bash/sh/zsh 另认单杠组合短旗标簇含小写 `c`（`-lc`/`-cl`/`-ic`…——簇内
  *    有 c 即消费下一参数为命令串；大小写敏感，`-C` 是 noclobber 不是内联；
  *    review 裁定扩充）；
- *  - node 另认 `-p` 求值打印旗标（实测 `node -p '1+1'` → 2——本身就是内联
- *    入口，review 第二轮裁定）与单杠簇含 `e`（`-pe` = -p + -e，实测可执行；
+ *  - node 另认 `-p`（及文档化长形 `--print`）求值打印旗标（实测
+ *    `node -p '1+1'` → 2、`node --print '1+1'` → 2——本身就是内联入口，
+ *    review 第二轮/收口裁定）与单杠簇含 `e`（`-pe` = -p + -e，实测可执行；
  *    大小写敏感；仅 node 启用 e 簇、仅 bash/sh/zsh 启用 c 簇——cmd/powershell
  *    的多字符旗标语义不同，不做逐字解析）；
  *  除此不拆组合、不做前缀/子串猜测；代价是旗标成为子命令参数时误红（如
@@ -132,9 +134,10 @@ interface InterpreterInlineSpec {
 const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   python: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
   python3: { flags: ['-c'], prefixes: ['-c'], caseInsensitive: false },
-  // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标（review 第二轮裁定）
+  // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标（review 第二轮裁定）；
+  // --print 为其文档化长形（实测 node --print '1+1' → 2，re-review 收口裁定）
   node: {
-    flags: ['-e', '--eval', '--expression', '-p'],
+    flags: ['-e', '--eval', '--expression', '-p', '--print'],
     caseInsensitive: false,
     shortFlagClusterChar: 'e',
   },
@@ -151,8 +154,13 @@ const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   bash: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
   sh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
   zsh: { flags: ['-c'], caseInsensitive: false, shortFlagClusterChar: 'c' },
-  // /ce 旧缩写被 /c 前缀吸收（review 裁定 Critical 1 折叠 Minor 7）
-  cmd: { flags: ['/c', '/k'], prefixes: ['/c', '/k'], caseInsensitive: true },
+  // /ce 旧缩写被 /c 前缀吸收（review 裁定 Critical 1 折叠 Minor 7）；/R 为
+  // /C 未记载别名（实测 cmd /r echo 可执行，re-review 收口裁定）
+  cmd: {
+    flags: ['/c', '/k', '/r'],
+    prefixes: ['/c', '/k', '/r'],
+    caseInsensitive: true,
+  },
 };
 
 /** 真身名 → 解释器键别名（review 裁定 Important 3）：高频真实世界形态——

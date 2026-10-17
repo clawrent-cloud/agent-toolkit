@@ -622,6 +622,32 @@ describe('computeTier（confirm-tier 判级）', () => {
     ).toBe('T1');
   });
 
+  it('解释器内联收口：node --print 长形与 cmd /r（/C 未记载别名，含粘连形）→ T2', () => {
+    const ws = makeWorkspace();
+    // --print 长形 + equals 形（'=' 前缀规则自动覆盖）
+    expect(
+      computeTier(execOp(['node', '--print', '1+1'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    expect(
+      computeTier(execOp(['node', '--print=1+1'], ws), {
+        program: okProgram(join(ws, 'bin', 'node.exe')),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // cmd /r：分离与粘连（/rdel x）形态，大小写不敏感
+    for (const arg of ['/r', '/R', '/rdel']) {
+      expect(
+        computeTier(execOp(['cmd', arg, 'x'], ws), {
+          program: okProgram(join(ws, 'bin', 'cmd.exe')),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+  });
+
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────
 
   it('schema 外 op type：响亮抛错（穷尽哨兵，编码错误不静默判级）', () => {
