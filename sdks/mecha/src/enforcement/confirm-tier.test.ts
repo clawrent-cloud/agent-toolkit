@@ -675,6 +675,22 @@ describe('computeTier（confirm-tier 判级）', () => {
         provenance: none,
       }),
     ).toBe('T2');
+    // NB-1：attached 粘连形（-m<module> 惯用法，python -mjson.tool）→ T2
+    for (const name of ['python', 'python3']) {
+      expect(
+        computeTier(execOp([name, '-mevilmod'], ws), {
+          program: okProgram(join(ws, 'bin', `${name}.exe`)),
+          provenance: none,
+        }),
+      ).toBe('T2');
+    }
+    // NB-1 回归：非 -m/-c 旗标（-u）与实参组合照旧 T1
+    expect(
+      computeTier(execOp(['python', '-u', 's.py'], ws), {
+        program: okProgram(join(ws, 'bin', 'python.exe')),
+        provenance: none,
+      }),
+    ).toBe('T1');
   });
 
   it('C1②：旗标内嵌路径（node --require=./evil.js）溯源实存命中 → T2', () => {
@@ -763,6 +779,62 @@ describe('computeTier（confirm-tier 判级）', () => {
         provenance: none,
       }),
     ).toBe('T1');
+  });
+
+  // ── NB-2：exec 环境注入通道（R28 红卡）────────────────────────────────────
+
+  it('NB-2：op.env 命中危险键（NODE_OPTIONS / BASH_ENV）→ T2，与 argv/溯源形态无关', () => {
+    const ws = makeWorkspace();
+    for (const env of [
+      { NODE_OPTIONS: '--require ./evil.js' },
+      { BASH_ENV: 'payload.sh' },
+      { NODE_OPTIONS: 'x', BASH_ENV: 'y' }, // 双键同中
+    ]) {
+      expect(
+        computeTier(
+          { type: 'exec.run', argv: ['node', 'app.js'], cwd: ws, env },
+          { program: okProgram(join(ws, 'bin', 'node.exe')), provenance: none },
+        ),
+      ).toBe('T2');
+    }
+    // 内联与溯源全净、仅 env 危险 → 仍 T2（env 是独立判红信号）
+  });
+
+  it('NB-2：良性 env 不误红（T1 基线保持）；win32 键名大小写不敏感、posix 精确匹配', () => {
+    const ws = makeWorkspace();
+    const base = {
+      program: okProgram(join(ws, 'bin', 'node.exe')),
+      provenance: none,
+    };
+    expect(
+      computeTier(
+        { type: 'exec.run', argv: ['node', 'app.js'], cwd: ws, env: { FOO: '1', PATH_EXTRA: 'x' } },
+        base,
+      ),
+    ).toBe('T1');
+    // 大小写变体：win32 键名折叠（NTFS 语义）；posix 精确匹配不折叠
+    const res = computeTier(
+      { type: 'exec.run', argv: ['node', 'app.js'], cwd: ws, env: { Node_Options: 'x' } },
+      base,
+    );
+    if (process.platform === 'win32') {
+      expect(res).toBe('T2');
+    } else {
+      expect(res).toBe('T1');
+    }
+  });
+
+  it('NB-2：denylistedExecEnvKeys 回传命中的规范键名（供确认卡披露）', async () => {
+    const { denylistedExecEnvKeys } = await import('./confirm-tier.js');
+    expect(denylistedExecEnvKeys({ NODE_OPTIONS: 'x', BASH_ENV: 'y', FOO: '1' })).toEqual([
+      'NODE_OPTIONS',
+      'BASH_ENV',
+    ]);
+    expect(denylistedExecEnvKeys(undefined)).toEqual([]);
+    expect(denylistedExecEnvKeys({ FOO: '1' })).toEqual([]);
+    if (process.platform === 'win32') {
+      expect(denylistedExecEnvKeys({ node_options: 'x' })).toEqual(['NODE_OPTIONS']);
+    }
   });
 
   // ── 契约与穷尽 ───────────────────────────────────────────────────────────

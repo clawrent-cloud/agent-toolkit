@@ -686,8 +686,11 @@ export class MechaSession {
       this.deps.confirm(req).then(
         (r) => {
           // I3：approved + remember 且本次是 exec.run T1 → 程序真身入记忆集
-          //（会话内后续同程序 exec 免确认；T2 不入集；终局清空）
+          //（会话内后续同程序 exec 免确认；T2 不入集；终局清空）。NB-4 守卫：
+          // executor 非空才入集——终局收割后的迟到批复（direct-library 接线
+          // 的原始 promise 兑现）不得为已死的会话留下记忆（新 offer = 新集）。
           if (
+            this.executor !== null &&
             r.approved &&
             r.remember === true &&
             meta !== undefined &&

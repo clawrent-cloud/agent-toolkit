@@ -9,7 +9,7 @@ import {
   resolveWithinWhitelist,
   type PathGuardResult,
 } from '../enforcement/path-guard.js';
-import { computeTier, type ConfirmTierDenyCode } from '../enforcement/confirm-tier.js';
+import { computeTier, denylistedExecEnvKeys, type ConfirmTierDenyCode } from '../enforcement/confirm-tier.js';
 import { matchProgram, type ProgramGuardResult } from '../enforcement/program-guard.js';
 import type { ProvenanceStore } from '../enforcement/provenance.js';
 
@@ -62,7 +62,9 @@ import type { ProvenanceStore } from '../enforcement/provenance.js';
  *  - 结果 value 每流只保有界 tail（末 64KB）——全量早已经 onChunk 流出，
  *    op 结果帧不得被巨量输出撑爆；
  *  - env 最小化（R13 裁定）：基座只取系统 PATH + win32 进程初始化必需项，
- *    再并 op.env——守护进程自身 env **绝不**继承（凭证零泄漏）；
+ *    再并 op.env——守护进程自身 env **绝不**继承（凭证零泄漏）；op.env 命中
+ *    危险键（NODE_OPTIONS 等启动时代码加载面）→ 判级 T2 红卡且卡面点名键
+ *    （R28 裁定，红卡而非剥离——见 confirm-tier EXEC_ENV_DENYLIST）；
  *  - 同一时刻仅 1 个 exec：第二并发 exec.run 在判级后立即 IO_ERROR
  *    'exec busy'（串行队列由 session 层保证，此处是第二道墙）；
  *  - killActiveExec() 暴露给 session（T12 链路断开时调用）：杀运行中 exec
@@ -870,7 +872,13 @@ export class MechaExecutor {
     // 确认：T2 在 T1 同一通路上把红卡披露语前置进 summary（人审看得到才叫
     // 披露）。argv 展示有界（schema 未限 argv 长度——巨量参数不得撑爆确认
     // 帧与行车记录；截断只影响展示尾部，披露语与工作目录恒在）。
-    const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}（工作目录 ${cwd.real}）`;
+    // NB-2（R28）：env 命中危险键时卡面点名键名（「环境变量含 …」）——env
+    // 值本不进卡面，危险键必须在卡上可见（键名取 confirm-tier 的同一判定，
+    // 两处口径不允许漂移）。
+    const envHits = denylistedExecEnvKeys(op.env);
+    const envNote =
+      envHits.length > 0 ? `（环境变量含 ${envHits.join('、')}）` : '';
+    const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}（工作目录 ${cwd.real}）${envNote}`;
     const summary =
       tier === 'T2' ? `${EXEC_T2_DISCLOSURE}\n${baseSummary}` : baseSummary;
     const denied = await this.requireConfirm(envelope, tier, summary, {

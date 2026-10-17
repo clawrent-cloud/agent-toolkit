@@ -55,7 +55,7 @@ interface Harness {
   ended: MechaSessionEndEvent[];
   policyUpdates: Array<{ frame: MechaPolicyUpdateFrame; applied: boolean }>;
   /** holdConfirm 时释放挂起确认（迟到批准用）。 */
-  releaseConfirm: (r: { approved: boolean }) => void;
+  releaseConfirm: (r: { approved: boolean; remember?: boolean }) => void;
   acceptOffer(): void;
 }
 
@@ -98,7 +98,11 @@ function makeHarness(opts?: {
       if (opts?.holdConfirm === true) {
         return new Promise((resolve) => {
           h.releaseConfirm = (r) =>
-            resolve({ requestId: req.requestId, approved: r.approved });
+            resolve({
+              requestId: req.requestId,
+              approved: r.approved,
+              ...(r.remember === true ? { remember: true } : {}),
+            });
         });
       }
       return Promise.resolve({
@@ -792,6 +796,75 @@ describe('MechaSession T1 remember（I3）', () => {
     );
     expect(w2.ok).toBe(true);
     expect(h.confirm).toHaveBeenCalledTimes(2); // 非 exec.run → 不记忆
+  });
+
+  it('NB-2：危险 env 键 → T2 红卡且卡面点名键名；remember 不越过 env 红卡；良性 env 照旧', async () => {
+    const h = makeHarness({ remember: true });
+    h.acceptOffer();
+    fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");');
+    // 先记 node（T1 批准+记住，第二次免确认）
+    await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r1'),
+    );
+    await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r2'),
+    );
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+
+    // 同程序 + 危险 env：remember 不越过 → 仍 T2 确认，卡面点名全部键 + 红卡披露语
+    const r3 = await h.session.executeOp(
+      env(
+        {
+          type: 'exec.run',
+          argv: ['node', 'a.js'],
+          cwd: '.',
+          env: { NODE_OPTIONS: '--require ./evil.js', BASH_ENV: 'p.sh' },
+        },
+        'op-env',
+      ),
+    );
+    expect(r3.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(2);
+    const req3 = h.confirm.mock.calls[1]![0] as Mecha.MechaConfirmRequest;
+    expect(req3.tier).toBe('T2');
+    expect(req3.summary).toContain('环境变量含 NODE_OPTIONS、BASH_ENV');
+    expect(req3.summary.startsWith('红卡警告：')).toBe(true);
+
+    // 良性 env：不触发红卡——node 已记忆 → 照旧免确认放行
+    const r4 = await h.session.executeOp(
+      env(
+        { type: 'exec.run', argv: ['node', 'a.js'], cwd: '.', env: { FOO: '1' } },
+        'op-benv',
+      ),
+    );
+    expect(r4.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(2); // 零新增确认
+  });
+
+  it('NB-4：终局收割后的迟到 remember 批复不入记忆集（stale-add 守卫）', async () => {
+    const h = makeHarness({ holdConfirm: true });
+    h.acceptOffer();
+    fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");');
+    const pending = h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-s'),
+    );
+    await waitForCondition(() => h.confirm.mock.calls.length === 1, '确认已发出');
+    h.session.disarm('completed'); // 终局收割（executor 置空）
+    h.releaseConfirm({ approved: true, remember: true }); // 迟到的批复（stale）
+    await new Promise((r) => setImmediate(r));
+
+    // 新 offer 后同程序 exec：记忆集必须仍为空 → 重新弹卡（holdConfirm 需再放行）
+    h.acceptOffer();
+    h.confirm.mockClear();
+    const r2p = h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-s2'),
+    );
+    await waitForCondition(() => h.confirm.mock.calls.length === 1, '新会话确认已发出');
+    h.releaseConfirm({ approved: true });
+    const r = await r2p;
+    expect(r.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+    await pending;
   });
 
   it('终局清记忆：新 offer 后同程序 exec 重新确认（集随会话生灭）', async () => {

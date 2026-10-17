@@ -78,6 +78,12 @@ import type { ProgramGuardResult } from './program-guard.js';
  *    溯源照红；值段解析不可判定跳过（同 R2）。token 本身无分隔符/盘符时
  *    （`--config=evil.yaml`）这是唯一防线；(c) 已红的 token 值段不再到达
  *    （先判 (c)）。
+ * - 环境注入通道（re-review NB-2 / ruling R28，红卡而非剥离）：op.env 命中
+ *   危险键（NODE_OPTIONS/PYTHONSTARTUP/LD_PRELOAD 等——启动时代码加载面，
+ *   见 EXEC_ENV_DENYLIST）→ T2；确认卡摘要点名命中键（executor 消费
+ *   denylistedExecEnvKeys）。win32 键名大小写不敏感，posix 精确匹配。
+ *   与内联/溯源为互相独立的判红信号（先到先红）；remember 记忆集只对 T1
+ *   生效，env 红卡天然不被越过。
  *
  * v0 清单外明确不补（非内联入口，或已被其他机制覆盖）：`pwsh -File
  * <script>` 是文件执行——脚本路径作为 argv 元素已由溯源判红覆盖；
@@ -152,9 +158,13 @@ interface InterpreterInlineSpec {
 
 const INTERPRETER_INLINE: Record<string, InterpreterInlineSpec> = {
   // -m 升内联（final review C1）：`python -m mod` 经 sys.path[0]=cwd 解析
-  // 模块文件，白名单植入体借此绕过溯源判红——宁误红接受 `python -m pip`
-  python: { flags: ['-c', '-m'], prefixes: ['-c'], caseInsensitive: false },
-  python3: { flags: ['-c', '-m'], prefixes: ['-c'], caseInsensitive: false },
+  // 模块文件，白名单植入体借此绕过溯源判红——宁误红接受 `python -m pip`。
+  // -m 同时进前缀族（re-review NB-1）：粘连形 `-m<module>`（`python
+  // -mjson.tool` 惯用法）以单元素抵达，精确匹配只认整 token 会漏红；CPython
+  // 无其他 m 首短选项，零误红代价（与 -c 前缀同一选段逻辑）。py/pythonw 等
+  // 别名指向 python 键，自动继承。
+  python: { flags: ['-c', '-m'], prefixes: ['-c', '-m'], caseInsensitive: false },
+  python3: { flags: ['-c', '-m'], prefixes: ['-c', '-m'], caseInsensitive: false },
   // -p 实测即求值打印（node -p '1+1' → 2）——本身就是内联旗标（review 第二轮裁定）；
   // --print 为其文档化长形（实测 node --print '1+1' → 2，re-review 收口裁定）
   node: {
@@ -222,6 +232,51 @@ const CLUSTER_RE: Record<'c' | 'e', RegExp> = {
 const DRIVE_HINT = /[a-zA-Z]:/;
 
 /**
+ * exec 环境注入通道的危险键清单（re-review NB-2 / Controller ruling R28，
+ * binding）：这些键能让解释器/动态链接器在**启动时**加载任意代码——
+ * NODE_OPTIONS（node 启动旗标注入）、PYTHONPATH/PYTHONSTARTUP、BASH_ENV/ENV
+ * （POSIX shell 启动文件）、LD_PRELOAD/DYLD_INSERT_LIBRARIES（动态链接劫
+ * 持）、PERL5OPT/RUBYOPT/JAVA_TOOL_OPTIONS/SHELLOPTS（各解释器启动面）。
+ * 确认卡只展示 argv+cwd，env 值不进卡面——`env:{NODE_OPTIONS:'--require
+ * ./evil.js'}` 会在一张无辜的 T1 卡后面执行上传代码。命中任一键 → **T2**
+ * （裁定红卡而非剥离：卡面点名键名，披露后由消费者定夺）。win32 键名大小
+ * 写不敏感匹配（NTFS 键语义），posix 精确匹配。
+ */
+const EXEC_ENV_DENYLIST: readonly string[] = [
+  'NODE_OPTIONS',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'BASH_ENV',
+  'ENV',
+  'LD_PRELOAD',
+  'DYLD_INSERT_LIBRARIES',
+  'PERL5OPT',
+  'RUBYOPT',
+  'JAVA_TOOL_OPTIONS',
+  'SHELLOPTS',
+];
+
+/**
+ * op.env 的危险键命中检测：返回命中的**规范键名**（denylist 侧拼写，供确认
+ * 卡披露「环境变量含 <键>」；win32 上驱动的大小写变体同样归一到规范名）。
+ * env 缺省/无命中 → 空表。computeTier 的 exec 分支与 executor 的确认摘要
+ * 共用同一判定（两处口径绝不允许漂移）。
+ */
+export function denylistedExecEnvKeys(
+  env: Record<string, string> | undefined,
+): string[] {
+  if (env === undefined) return [];
+  const keys = Object.keys(env);
+  if (keys.length === 0) return [];
+  if (WIN32) {
+    const lowered = new Set(keys.map((k) => k.toLowerCase()));
+    return EXEC_ENV_DENYLIST.filter((d) => lowered.has(d.toLowerCase()));
+  }
+  const present = new Set(keys);
+  return EXEC_ENV_DENYLIST.filter((d) => present.has(d));
+}
+
+/**
  * 旗标 token 内嵌路径判定（final review C1 (c)，宁误红）：`-`/`/` 打头的
  * token 中出现路径分隔符或盘符 → T2 一律红——它是加载指令
  * （`--require=./evil.js`、`--experimental-loader=./x`、win32 的
@@ -272,6 +327,13 @@ function execTier(
   // ① 程序白名单：argv[0] 未命中表 = 硬拒（优先于一切判级信号）
   if (!ctx.program.ok) {
     return { deny: PROGRAM_DENIED };
+  }
+
+  // ②′ 环境注入通道（R28）：op.env 命中危险键 → T2——env 值不进确认卡面，
+  // 危险键是绕过卡面的启动时代码加载通道；红卡而非剥离（披露后由消费者
+  // 定夺）。独立判红信号：与内联/溯源互不排斥，先到先红。
+  if (denylistedExecEnvKeys(op.env).length > 0) {
+    return 'T2';
   }
 
   // ② 解释器内联模式 → T2（argv[0] 合法也必须红）
