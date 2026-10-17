@@ -472,22 +472,49 @@ describe('溯源收口（copy/move 目的地登记——红卡洗白链裁定）
     expect(tier).toBe('T2');
   });
 
-  it('目录 copy/move 不崩（目录无单内容哈希，不登记——残余面报告声明）', async () => {
+  it('目录 copy/move：目的地树内逐文件入溯源（R11 收口——upload → copy 目录 → 树内文件 driver-authored）', async () => {
     const h = makeHarness();
-    fs.mkdirSync(join(h.ws, 'docs'));
-    fs.writeFileSync(join(h.ws, 'docs', 'x.txt'), 'x');
+    // upload a.txt（scratch 根，文件级登记路径）——复制 scratch 目录本身
+    await h.executor.execute(
+      env({ type: 'file.upload', name: 'a.txt', content: 'v1' }),
+    );
+    // 构造含嵌套子目录的树（fs.write 已在源路径做文件级登记）
+    await h.executor.execute(env({ type: 'fs.mkdir', path: 'proj/nested' }, 'op-2'));
+    await h.executor.execute(
+      env({
+        type: 'fs.write',
+        path: 'proj/nested/b.txt',
+        content: 'B',
+        encoding: 'utf8',
+      }, 'op-3'),
+    );
 
+    // 复制 upload 落点目录 → 树内文件登记
     const cp = await h.executor.execute(
-      env({ type: 'fs.copy', from: 'docs', to: 'docs2' }),
+      env({ type: 'fs.copy', from: h.scratchDir, to: 'scratch2' }, 'op-4'),
     );
     expect(cp.ok).toBe(true);
-    expect(fs.existsSync(join(h.ws, 'docs2', 'x.txt'))).toBe(true);
+    expect(
+      h.provenance.isDriverAuthored(join(h.realWs, 'scratch2', 'a.txt')),
+    ).toBe(true);
 
+    // 复制含嵌套子目录的工作区目录 → 深层文件同样登记
+    const cp2 = await h.executor.execute(
+      env({ type: 'fs.copy', from: 'proj', to: 'proj2' }, 'op-5'),
+    );
+    expect(cp2.ok).toBe(true);
+    expect(
+      h.provenance.isDriverAuthored(join(h.realWs, 'proj2', 'nested', 'b.txt')),
+    ).toBe(true);
+
+    // 目录 move 同口径：重命名后的树内文件登记
     const mv = await h.executor.execute(
-      env({ type: 'fs.move', from: 'docs2', to: 'docs3' }, 'op-2'),
+      env({ type: 'fs.move', from: 'proj2', to: 'proj3' }, 'op-6'),
     );
     expect(mv.ok).toBe(true);
-    expect(fs.existsSync(join(h.ws, 'docs3', 'x.txt'))).toBe(true);
+    expect(
+      h.provenance.isDriverAuthored(join(h.realWs, 'proj3', 'nested', 'b.txt')),
+    ).toBe(true);
   });
 });
 
@@ -544,18 +571,6 @@ describe('MechaExecutor 限额与审计兜底', () => {
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('IO_ERROR');
     expect(fs.existsSync(join(h.ws, 'out.txt'))).toBe(false);
-  });
-
-  it('exec.run v0 未接线 → PROGRAM_DENIED 硬拒（fail-closed 占位，Task 11 实接）', async () => {
-    const h = makeHarness();
-
-    const r = await h.executor.execute(
-      env({ type: 'exec.run', argv: ['python', 'x.py'], cwd: '.' }),
-    );
-
-    expect(r.ok).toBe(false);
-    expect(r.error?.code).toBe('PROGRAM_DENIED');
-    expect(h.confirm).not.toHaveBeenCalled();
   });
 
   it('scratchDir 相对路径 → 构造即 TypeError（配置错误 fail-closed，风格随 T6/T8）', () => {
