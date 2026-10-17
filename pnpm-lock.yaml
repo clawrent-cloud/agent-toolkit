@@ -186,6 +186,9 @@ importers:
       '@clawrent/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@clawrent/provider':
+        specifier: workspace:*
+        version: link:../../packages/provider
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
