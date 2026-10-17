@@ -25,7 +25,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "lint": "eslint src/ test/"
   },
   "dependencies": {
     "@clawrent/protocol": "workspace:*",

@@ -75,6 +75,20 @@ export type MechaPolicyUpdateFrame = Extract<
   { type: 'policy.update' }
 >;
 
+/** session.pause / session.resume / session.end 帧精确类型（同上；T14/T16 接线消费）。 */
+export type MechaSessionPauseFrame = Extract<
+  Mecha.MechaDeviceFrame,
+  { type: 'session.pause' }
+>;
+export type MechaSessionResumeFrame = Extract<
+  Mecha.MechaDeviceFrame,
+  { type: 'session.resume' }
+>;
+export type MechaSessionEndFrame = Extract<
+  Mecha.MechaDeviceFrame,
+  { type: 'session.end' }
+>;
+
 /** offer 裁决：accept / reject（reason 为人话，v0 不钉枚举——frames.ts 同口径）。 */
 export type OfferDecision =
   | { decision: 'accept' }
