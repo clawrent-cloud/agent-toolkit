@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, win32 } from 'node:path';
 
 /**
  * 机甲 v0 协议 —— 策略与能力清单（capability manifest）。
@@ -25,10 +25,16 @@ export const MECHA_LIMITS_DEFAULTS = {
   maxConcurrentExecs: 1,
 } as const;
 
-/** 绝对路径校验(纯验证,不做任何 fs/realpath——那是强制层的事)。 */
+/**
+ * 绝对路径校验(纯验证,不做任何 fs/realpath——那是强制层的事)。
+ * 双平台口径（0.6.2）：POSIX 绝对或 win32 绝对（盘符 `D:\Docs`/`D:/Docs` + UNC
+ * `\\server\share`）——schema 在两端跑（平台策略校验在 Linux 容器、设备强制层
+ * 在本机），单按宿主 `path.isAbsolute` 会把 Windows 设备的真实白名单在平台侧
+ * 全数拒掉（e2e-mecha 2026-10-24 发现）。
+ */
 const AbsolutePathSchema = z
   .string()
-  .refine((p) => isAbsolute(p), { message: 'must be an absolute path' });
+  .refine((p) => isAbsolute(p) || win32.isAbsolute(p), { message: 'must be an absolute path' });
 
 /** 程序白名单条目:裸名 → 钉死的登记真身绝对路径(永不文件系统搜索)。 */
 export const MechaProgramEntrySchema = z.object({

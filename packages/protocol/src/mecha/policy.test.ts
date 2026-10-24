@@ -40,6 +40,39 @@ describe('mecha policy & capability manifest schemas', () => {
     expect(result.success).toBe(false);
   });
 
+  it('win32 风格绝对路径接受(盘符正反斜杠 + UNC;0.6.2 双平台口径)', () => {
+    // 平台 schema 在 Linux 容器跑:单按宿主 path.isAbsolute 会把 Windows 设备的
+    // 真实白名单(D:\Docs 等)全数 400——e2e-mecha 2026-10-24 发现。
+    const winDirs = ['D:\\Docs\\mecha', 'D:/Docs/mecha', '\\\\server\\share\\mecha'];
+    for (const dir of winDirs) {
+      const result = MechaPolicySchema.safeParse({
+        dirs: [dir],
+        programs: [{ name: 'node', absPath: 'D:\\tools\\node.exe' }],
+        limits: MECHA_LIMITS_DEFAULTS,
+      });
+      expect(result.success, `dir=${dir}`).toBe(true);
+    }
+    // CapabilityManifest 的 scratchDir 同口径
+    const manifest = {
+      sessionId: 'sess-1',
+      policy: { dirs: ['D:\\Docs\\mecha'], programs: [], limits: MECHA_LIMITS_DEFAULTS },
+      mechaVersion: '0.6.2',
+      scratchDir: 'D:\\Docs\\mecha\\.clawrent\\scratch\\sess-1',
+    };
+    expect(CapabilityManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it('win32 口径仍拒绝相对路径(不因放宽误放行)', () => {
+    for (const rel of ['Downloads', '.\\Downloads', 'Docs\\mecha', '..\\..\\etc']) {
+      const result = MechaPolicySchema.safeParse({
+        dirs: [rel],
+        programs: [],
+        limits: MECHA_LIMITS_DEFAULTS,
+      });
+      expect(result.success, `relative=${rel}`).toBe(false);
+    }
+  });
+
   it('limits 缺字段抛 Zod 错误', () => {
     const partial: Record<string, unknown> = { ...MECHA_LIMITS_DEFAULTS };
     delete partial['heartbeatMs'];
