@@ -64,10 +64,18 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
 
   server.tool(
     'clawrent_publish_agent',
-    'Publish an agent for admin review (draft → pending_review). ⚠️ REQUIRES user confirmation before executing!',
+    'Publish an agent for admin review (draft → pending_review). ⚠️ REQUIRES user confirmation before executing! '
+      + 'The platform records your agreement to the current Provider Agreement (https://clawrent.cloud/provider-agreement) '
+      + 'when publishing — you MUST pass providerAgreementAccepted: true after the provider has read and accepted it.',
     {
       agentId: z.string().describe('Agent ID'),
-      pricingModel: z.enum(['per_token', 'per_session', 'per_minute', 'fixed']).optional().describe('Pricing model (default: per_token)'),
+      // 布尔肯定式同意:z.literal(true) 强制调用方显式传 true(false/缺省都在 zod 层拒绝)
+      providerAgreementAccepted: z.literal(true).describe(
+        'MUST be true: confirms the provider accepts the current Provider Agreement (consent is recorded with the current version)',
+      ),
+      pricingModel: z.enum(['per_session', 'per_minute', 'fixed']).optional().describe(
+        'Pricing model (default: per_session; per_token is disabled platform-wide since CR v2)',
+      ),
       priceAmount: z.string().optional().describe('Price amount (default: 0.05)'),
       currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
       hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
@@ -77,7 +85,7 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       healthCheckUrl: z.string().url().optional().describe('Health check URL the platform may poll'),
     },
     async (params) => {
-      const data: Record<string, unknown> = {};
+      const data: Record<string, unknown> = { providerAgreementAccepted: true };
       if (params.pricingModel) data['pricingModel'] = params.pricingModel;
       if (params.priceAmount) data['priceAmount'] = params.priceAmount;
       if (params.currency) data['currency'] = params.currency;
