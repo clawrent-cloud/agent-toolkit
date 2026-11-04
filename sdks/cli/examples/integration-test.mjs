@@ -274,7 +274,7 @@ async function main() {
           description: `Integration test agent created by run ${RUN_ID}. This agent demonstrates full lifecycle testing.`,
           pricingModel: 'per_session',
           priceAmount: '5.00',
-          currency: 'CNY',
+          currency: 'USD',
           approvalMode: 'manual',
           hostingType: 'self_hosted',
           transparencyLevel: 'transparent',

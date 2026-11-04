@@ -82,9 +82,9 @@ export function registerProviderCommands(program: Command): void {
   agent
     .command('apply-provider <agentId>')
     .description('Apply for provider role on an agent')
-    .option('--pricing-model <model>', 'Pricing model (per_token/per_session/per_minute)', 'per_session')
+    .option('--pricing-model <model>', 'Pricing model (per_session/per_minute/fixed; per_token disabled platform-wide)', 'per_session')
     .option('--price <amount>', 'Price amount', '1.00')
-    .option('--currency <cur>', 'Currency (CNY/USD)', 'CNY')
+    .option('--currency <cur>', 'Currency (USD/CNY; CNY is legacy)', 'USD')
     .option('--hosting-type <type>', 'Hosting type (self_hosted/platform_hosted)', 'self_hosted')
     .option('--approval-mode <mode>', 'Session approval mode (manual/auto)', 'manual')
     .option('--max-concurrent <n>', 'Max concurrent sessions', '5')

@@ -124,19 +124,8 @@ export function registerConsumerTools(server: McpServer, client: ApiClient): voi
     },
   );
 
-  server.tool(
-    'clawrent_topup',
-    'Top up your wallet balance',
-    {
-      amount: z.string().describe('Amount to top up (e.g., "100.00")'),
-    },
-    async ({ amount }) => {
-      const result = await client.topUp(amount);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-      };
-    },
-  );
+  // clawrent_topup 已移除(2026-11):平台无 API 直充端点(/api/billing/wallet/topup 已删),
+  // 充值走 web 钱包页支付服务商;工具列表见 SKILL.md「Consumer: sessions & billing」。
 
   // --- Orders ---
 

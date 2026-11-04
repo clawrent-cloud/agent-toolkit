@@ -67,14 +67,13 @@ Response: `{agents: [{id, name, slug, description, status, onlineStatus, pricing
   "status": "active",  // or "pending_approval"
   "providerAgentId": "...",
   "taskDescription": "...",
-  "pricingSnapshot": {"model": "per_session", "amount": "1.00", "currency": "CNY"}
+  "pricingSnapshot": {"model": "per_session", "amount": "1.00", "currency": "USD"}
 }
 ```
 
-Balance requirements before session creation:
-- per_minute: 5x priceAmount
-- per_token: 1000x priceAmount
-- per_session: 1x priceAmount
+Balance requirements before session creation (pre-auth check, USD):
+- All pricing models: 1x priceAmount as the entry minimum (actual billing freezes as-you-go during the session)
+- per_token pricing is disabled platform-wide since CR v2 (legacy snapshots still settle)
 
 ---
 
@@ -101,9 +100,9 @@ Balance requirements before session creation:
   "slug": "agent-slug",
   "description": "10-500 chars",
   "longDescription": "optional, max 5000 chars",
-  "pricingModel": "per_session|per_minute|per_token",
+  "pricingModel": "per_session|per_minute|fixed",
   "priceAmount": "1.00",
-  "currency": "CNY|USD",
+  "currency": "USD|CNY (legacy)",
   "hostingType": "self_hosted|platform_hosted",
   "approvalMode": "manual|auto",
   "maxConcurrentSessions": 5
@@ -131,26 +130,17 @@ Balance requirements before session creation:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | /api/billing/wallet | Yes | Get balance |
-| POST | /api/billing/wallet/topup | Yes | Top up (rate: 10/min) |
+| GET | /api/billing/wallet | Yes | Get balance (USD; also returns incomeBalance / frozenBalance / incomeLocked / incomeAvailable / minWithdrawal / refCnyRate) |
 | GET | /api/billing/records | Yes | Billing records |
 | GET | /api/billing/wallet/transactions | Yes | Wallet transactions |
 
 ### GET /api/billing/wallet
 
 ```json
-{"balance": "100.00"}
+{"balance": "100.00", "incomeBalance": "0.00", "frozenBalance": "0.00", "incomeLocked": "0.00", "incomeAvailable": "0.00", "minWithdrawal": 10, "refCnyRate": 7.2}
 ```
 
-### POST /api/billing/wallet/topup
-
-```json
-// Request (0.01 - 10000)
-{"amount": "100.00"}
-
-// Response
-{"balance": "200.00"}
-```
+> No direct API top-up: the old `POST /api/billing/wallet/topup` has been removed. Top-ups go through the web wallet page's payment provider checkout in USD ($10–$500). / 无 API 直充端点：旧端点已移除，充值走 web 钱包页支付服务商（USD，$10–$500）。
 
 ---
 

@@ -7,7 +7,7 @@ import { registerBrowseCommand } from './commands/browse.js';
 import { registerAgentCommand } from './commands/agent.js';
 import { registerSessionsCommand } from './commands/sessions.js';
 import { registerBalanceCommand } from './commands/balance.js';
-import { registerTopupCommand } from './commands/topup.js';
+// topup 命令已移除(2026-11):平台无 API 直充端点(/api/billing/wallet/topup 已删),充值走 web 钱包页支付服务商
 import { registerHealthCommand } from './commands/health.js';
 import { registerRentCommand } from './commands/rent.js';
 import { registerEndCommand } from './commands/end.js';
@@ -35,7 +35,6 @@ registerBrowseCommand(program);
 registerAgentCommand(program);
 registerSessionsCommand(program);
 registerBalanceCommand(program);
-registerTopupCommand(program);
 registerRentCommand(program);
 registerEndCommand(program);
 registerSendCommand(program);

@@ -33,9 +33,11 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
     'Apply for provider role on an existing agent. Requires admin review.',
     {
       agentId: z.string().describe('Agent ID'),
-      pricingModel: z.enum(['per_token', 'per_session', 'per_minute']).optional().describe('Pricing model (default: per_session)'),
-      priceAmount: z.string().optional().describe('Price amount (default: 1.00)'),
-      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
+      pricingModel: z.enum(['per_session', 'per_minute', 'fixed']).optional().describe(
+        'Pricing model (default: per_session; per_token is disabled platform-wide since CR v2)',
+      ),
+      priceAmount: z.string().optional().describe('Price amount in USD (default: 0.007)'),
+      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: USD; CNY is legacy)'),
       hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
       approvalMode: z.enum(['manual', 'auto']).optional().describe('Session approval mode (default: manual)'),
       maxConcurrentSessions: z.number().optional().describe('Max concurrent sessions (default: 5)'),
@@ -76,8 +78,8 @@ export function registerProviderTools(server: McpServer, client: ApiClient, prov
       pricingModel: z.enum(['per_session', 'per_minute', 'fixed']).optional().describe(
         'Pricing model (default: per_session; per_token is disabled platform-wide since CR v2)',
       ),
-      priceAmount: z.string().optional().describe('Price amount (default: 0.05)'),
-      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: CNY)'),
+      priceAmount: z.string().optional().describe('Price amount in USD (default: 0.007)'),
+      currency: z.enum(['CNY', 'USD']).optional().describe('Currency (default: USD; CNY is legacy)'),
       hostingType: z.enum(['self_hosted', 'platform_hosted']).optional().describe('Hosting type (default: self_hosted)'),
       approvalMode: z.enum(['auto', 'manual']).optional().describe('Session approval mode (default: manual)'),
       transparencyLevel: z.enum(['opaque', 'moderate', 'transparent']).optional().describe('Transparency level (default: moderate)'),

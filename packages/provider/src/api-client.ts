@@ -149,13 +149,11 @@ export class ApiClient {
   }
 
   // --- Billing ---
+  // topUp 已移除(2026-11):平台无 API 直充端点(POST /api/billing/wallet/topup 已删),
+  // 充值走 web 钱包页支付服务商(Creem/PayPal,USD 档位 $10–$500)。
 
   async getBalance(): Promise<{ balance: string }> {
     return this.request('GET', '/api/billing/wallet');
-  }
-
-  async topUp(amount: string): Promise<{ balance: string }> {
-    return this.request('POST', '/api/billing/wallet/topup', { amount });
   }
 
   // --- Provider: Agents ---
