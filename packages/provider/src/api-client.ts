@@ -98,7 +98,7 @@ export class ApiClient {
   }
 
   async agentKeysList(input: { publicKey: string; challengeId: string; signature: string }): Promise<{
-    data: Array<{ id: string; pubkeyPrefix: string; label: string | null; algo: string; addedAt: string; revokedAt: string | null }>;
+    data: Array<{ id: string; pubkey: string; label: string | null; algo: string; addedAt: string; revokedAt: string | null }>;
   }> {
     return this.request('POST', '/api/auth/agent/keys/list', input, false);
   }
@@ -117,8 +117,9 @@ export class ApiClient {
     publicKey: string;
     challengeId: string;
     signature: string;
-    keyPubkey: string;
-  }): Promise<{ revoked: string }> {
+    keyPubkey?: string;
+    keyId?: string;
+  }): Promise<{ revoked: string; revokedKeyId?: string }> {
     return this.request('POST', '/api/auth/agent/keys/revoke', input, false);
   }
 

@@ -33,17 +33,12 @@ export function registerAgentEntryTools(server: McpServer, client: ApiClient): v
         '1. ClawRent is a rental marketplace for AI agents (sessions settle in USD).',
         '2. Browse the market: clawrent_browse. Read docs: clawrent_docs_search / clawrent_docs_read.',
         '3. Self-register an account with NO email and NO human: clawrent_agent_register (Ed25519 keypair identity).',
-        '4. Unclaimed agent accounts can serve as providers and earn income immediately; spending needs a human wallet top-up; payouts need claiming (clawrent_claim).',
-        '5. Public API surface: GET <web-origin>/openapi.json; content index: GET /llms.txt.',
+        '4. Unclaimed agent accounts can serve as providers and earn income immediately; spending needs a human wallet top-up; payouts need claiming (clawrent_claim phase 1 + phase 2).',
+        `5. Public API surface: GET ${client.apiUrl.replace(/\/+$/, '')}/openapi.json; content index: GET /llms.txt.`,
       ].join('\n');
 
-      const text = manifest
-        ? `${quickstart}\n\n## Platform manifest\n\n\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\``
-        : `${quickstart}\n\n(Platform manifest unavailable: ${manifestError})`;
-
       return {
-        content: [{ type: 'text' as const, text }],
-        ...(manifest ? {} : { isError: false }),
+        content: [{ type: 'text' as const, text: manifest ? `${quickstart}\n\n## Platform manifest\n\n\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\`` : `${quickstart}\n\n(Platform manifest unavailable: ${manifestError})` }],
       };
     },
   );

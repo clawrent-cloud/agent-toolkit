@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { createInterface } from 'node:readline';
-import { ApiClient, loadConfig, saveConfig, clearConfig, getConfigPath, generateAgentKeyPair, signChallenge, loadKeyPair, saveKeyPair } from '@clawrent/provider';
+import { ApiClient, loadConfig, saveConfig, clearConfig, getConfigPath, generateAgentKeyPair, signChallenge, loadKeyPair, saveKeyPair, defaultKeysDir } from '@clawrent/provider';
 import { printJson, printError, printSuccess } from '../output.js';
 
 /**
@@ -92,8 +92,9 @@ export function registerAuthCommand(program: Command): void {
         // ── Agent 自主注册:keypair 身份,无邮箱无验证码 ──
         if (opts.agent) {
           const name = opts.name ?? `agent-${Date.now().toString(36)}`;
+          const keysDirInfo = defaultKeysDir();
           if (loadKeyPair('default')) {
-            printError("Key 'default' already exists at ~/.clawrent/keys/ — use `clawrent keys add` for more keys, or remove/rename the existing key file to register a NEW account.");
+            printError(`Key 'default' already exists under ${keysDirInfo} — use \`clawrent keys add\` for more keys, or remove the existing key file to register a NEW account.`);
             process.exit(1);
           }
           const pair = generateAgentKeyPair();
@@ -101,25 +102,43 @@ export function registerAuthCommand(program: Command): void {
           printSuccess(`Ed25519 keypair generated → ${keyPath}`);
           printSuccess('⚠️  Losing this key locks the account permanently (platform ruling D6). Back it up.');
 
-          const reg = await client.agentRegister({ name, publicKey: pair.publicKey });
-          const signature = await signChallenge(pair.privateKey, reg.challenge);
-          const result = await client.agentRegisterConfirm({ challengeId: reg.challengeId, signature });
+          let reg: Awaited<ReturnType<typeof client.agentRegister>>;
+          try {
+            reg = await client.agentRegister({ name, publicKey: pair.publicKey });
+          } catch (err) {
+            // 注册阶段失败:账号绝无可能存在 → 删孤儿钥文件保住重试路径(I2;
+            // 不删则下次被「钥已存在」挡住,且手动删除重试还会白烧共享 IP 配额)
+            const { rmSync } = await import('node:fs');
+            try { rmSync(keyPath); } catch { /* best-effort */ }
+            printError(`Registration failed (no account was created, key file cleaned): ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+          }
 
-          saveConfig({
-            token: result.token,
-            apiKey: result.apiKey,
-            userId: result.user.id,
-            name: result.user.name,
-          });
-          printJson({
-            success: true,
-            user: result.user,
-            token: result.token,
-            apiKey: result.apiKey,
-            keyPath,
-            configSaved: getConfigPath(),
-            note: 'Unclaimed agent account: browse/serve/earn now; claim with `clawrent claim` (bind email + set password) to enable payouts.',
-          });
+          try {
+            const signature = await signChallenge(pair.privateKey, reg.challenge);
+            const result = await client.agentRegisterConfirm({ challengeId: reg.challengeId, signature });
+
+            saveConfig({
+              token: result.token,
+              apiKey: result.apiKey,
+              userId: result.user.id,
+              name: result.user.name,
+            });
+            printJson({
+              success: true,
+              user: result.user,
+              token: result.token,
+              apiKey: result.apiKey,
+              keyPath,
+              configSaved: getConfigPath(),
+              note: 'Unclaimed agent account: browse/serve/earn now; claim with `clawrent auth claim` (bind email + set password) to enable payouts.',
+            });
+          } catch (err) {
+            // confirm 阶段失败有歧义(账号可能已建,删钥=自断 D6 救济)→ 保留文件 + 探测法
+            printError(`Registration confirm failed: ${err instanceof Error ? err.message : String(err)}`);
+            printError(`Key file kept at ${keyPath}. The account may exist — probe with \`clawrent keys list\` (401 unknown_key = no account holds this key; then delete the file and retry).`);
+            process.exit(1);
+          }
           return;
         }
 
@@ -223,23 +242,23 @@ export function registerAuthCommand(program: Command): void {
       try {
         const pair = loadKeyPair(opts.key ?? 'default');
         if (!pair) {
-          printError(`Key '${opts.key ?? 'default'}' not found under the keys dir. Agent accounts are claimed with their Ed25519 key.`);
+          printError(`Key '${opts.key ?? 'default'}' not found under ${defaultKeysDir()}. Agent accounts are claimed with their Ed25519 key.`);
           process.exit(1);
         }
         const client = new ApiClient(loadConfig());
-
-        const ch = await client.agentChallenge(pair.publicKey);
-        const signature = await signChallenge(pair.privateKey, ch.challenge);
+        // 邮箱先问完再取挑战(操作挑战 60s TTL,别让输入时间吃掉窗口 —— 终审 M6)
         const email = opts.email ?? await promptInput('Email to bind: ');
-        await client.agentClaimStart({ publicKey: pair.publicKey, challengeId: ch.challengeId, signature, email });
-        printSuccess(`Verification code sent to ${email}.`);
-
         const code = opts.code ?? await promptInput('Verification code: ');
         const password = opts.password ?? await promptInput('New password (min 8 chars): ', true);
         if (password.length < 8) {
           printError('Password must be at least 8 characters');
           process.exit(1);
         }
+
+        const ch = await client.agentChallenge(pair.publicKey);
+        const signature = await signChallenge(pair.privateKey, ch.challenge);
+        await client.agentClaimStart({ publicKey: pair.publicKey, challengeId: ch.challengeId, signature, email });
+        printSuccess(`Verification code sent to ${email}.`);
 
         const ch2 = await client.agentChallenge(pair.publicKey);
         const signature2 = await signChallenge(pair.privateKey, ch2.challenge);
@@ -251,8 +270,31 @@ export function registerAuthCommand(program: Command): void {
           verificationCode: code,
           newPassword: password,
         });
-        saveConfig({ token: result.token, email, name: undefined });
+        saveConfig({ token: result.token, email });
         printJson({ success: true, email, token: result.token, configSaved: getConfigPath() });
+      } catch (err: unknown) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  auth
+    .command('reissue')
+    .description('Reissue clr_ API key + JWT for the agent account bound to a local key (lost credentials recovery, R4)')
+    .option('-k, --key <name>', "Local key name (default: 'default')", 'default')
+    .action(async (opts: { key?: string }) => {
+      try {
+        const pair = loadKeyPair(opts.key ?? 'default');
+        if (!pair) {
+          printError(`Key '${opts.key ?? 'default'}' not found under ${defaultKeysDir()}.`);
+          process.exit(1);
+        }
+        const client = new ApiClient(loadConfig());
+        const ch = await client.agentChallenge(pair.publicKey);
+        const signature = await signChallenge(pair.privateKey, ch.challenge);
+        const result = await client.agentReissue({ publicKey: pair.publicKey, challengeId: ch.challengeId, signature });
+        saveConfig({ token: result.token, apiKey: result.apiKey });
+        printJson({ success: true, apiKey: result.apiKey, token: result.token, configSaved: getConfigPath() });
       } catch (err: unknown) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);

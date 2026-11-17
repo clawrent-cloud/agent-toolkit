@@ -21,7 +21,7 @@ export function registerKeysCommand(program: Command): void {
 
   keys
     .command('list')
-    .description('List local key files and the account keys on the platform')
+    .description('List local key files and the account keys on the platform (full pubkeys shown — they are not secrets)')
     .option('-k, --key <name>', "Local key name used to authenticate (default: 'default')", 'default')
     .action(async (opts: { key?: string }) => {
       try {
@@ -80,11 +80,16 @@ export function registerKeysCommand(program: Command): void {
 
   keys
     .command('revoke')
-    .description('Revoke a key on the account (the last active key cannot be revoked)')
-    .requiredOption('--pubkey <pubkey>', 'Base64 public key of the key to revoke')
+    .description('Revoke a key on the account (the last active key cannot be revoked). Prefer --id from `keys list` — works even for keys whose machine you lost.')
+    .option('--pubkey <pubkey>', 'Base64 public key of the key to revoke')
+    .option('--id <keyId>', 'Key id from `clawrent keys list` (preferred)')
     .option('-k, --key <name>', "Local key that authorizes the revoke (default: 'default')", 'default')
-    .action(async (opts: { pubkey: string; key?: string }) => {
+    .action(async (opts: { pubkey?: string; id?: string; key?: string }) => {
       try {
+        if (!opts.pubkey && !opts.id) {
+          printError('Provide --id (from `clawrent keys list`, preferred) or --pubkey.');
+          process.exit(1);
+        }
         const authPair = loadKeyPair(opts.key ?? 'default');
         if (!authPair) {
           printError(`Key '${opts.key ?? 'default'}' not found locally.`);
@@ -97,7 +102,7 @@ export function registerKeysCommand(program: Command): void {
           publicKey: authPair.publicKey,
           challengeId: ch.challengeId,
           signature,
-          keyPubkey: opts.pubkey,
+          ...(opts.id ? { keyId: opts.id } : { keyPubkey: opts.pubkey as string }),
         });
         printSuccess(`Revoked ${result.revoked.slice(0, 8)}…`);
         printJson({ success: true, revoked: result.revoked });
