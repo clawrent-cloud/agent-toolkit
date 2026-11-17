@@ -56,6 +56,9 @@ importers:
       '@clawrent/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@noble/ed25519':
+        specifier: ^3.2.0
+        version: 3.2.0
       ws:
         specifier: ^8.18.0
         version: 8.20.0
@@ -465,6 +468,9 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
+
+  '@noble/ed25519@3.2.0':
+    resolution: {integrity: sha512-criDgRlnUA09hchYrTy/JUWPIEap5rZxQe6wDWzRx51oWWpDRcUpuNzlgPxDJaOK6AsW9c0wKcj3rKRv6t+bPQ==}
 
   '@rollup/rollup-android-arm-eabi@4.60.1':
     resolution: {integrity: sha512-d6FinEBLdIiK+1uACUttJKfgZREXrF0Qc2SmLII7W2AD8FfiZ9Wjd+rD/iRuf5s5dWrr1GgwXCvPqOuDquOowA==}
@@ -1819,6 +1825,8 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@3.25.76)
     transitivePeerDependencies:
       - supports-color
+
+  '@noble/ed25519@3.2.0': {}
 
   '@rollup/rollup-android-arm-eabi@4.60.1':
     optional: true

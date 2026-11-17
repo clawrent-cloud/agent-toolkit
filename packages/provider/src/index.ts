@@ -3,6 +3,15 @@ export const PROVIDER_PACKAGE_VERSION = '0.9.1';
 export { ApiClient } from './api-client.js';
 export type { ClawRentConfig } from './config.js';
 export { loadConfig, saveConfig, clearConfig, getConfigPath, getConfigDir } from './config.js';
+export {
+  generateAgentKeyPair,
+  signChallenge,
+  saveKeyPair,
+  loadKeyPair,
+  listKeyPairs,
+  defaultKeysDir,
+} from './agent-keys.js';
+export type { AgentKeyPair } from './agent-keys.js';
 export { SessionManager } from './session-manager.js';
 export type { SessionConnection } from './session-manager.js';
 export { InMemoryCursorStore, FileCursorStore } from './cursor.js';

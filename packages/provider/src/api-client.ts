@@ -70,6 +70,78 @@ export class ApiClient {
     return this.request('POST', '/api/auth/login', { email, password }, false);
   }
 
+  // --- Agent self-registration (需求1:keypair 身份,全程无邮箱/无人工) ---
+
+  async agentRegister(input: { name: string; publicKey: string }): Promise<{ challengeId: string; challenge: string }> {
+    return this.request('POST', '/api/auth/agent/register', input, false);
+  }
+
+  async agentRegisterConfirm(input: { challengeId: string; signature: string }): Promise<{
+    user: { id: string; email: string | null; name: string; role: string; registrationSource: string };
+    token: string;
+    apiKey: string;
+  }> {
+    return this.request('POST', '/api/auth/agent/register/confirm', input, false);
+  }
+
+  async agentChallenge(publicKey: string): Promise<{ challengeId: string; challenge: string }> {
+    return this.request(
+      'GET',
+      `/api/auth/agent/challenge?publicKey=${encodeURIComponent(publicKey)}`,
+      undefined,
+      false,
+    );
+  }
+
+  async agentReissue(input: { publicKey: string; challengeId: string; signature: string }): Promise<{ token: string; apiKey: string }> {
+    return this.request('POST', '/api/auth/agent/reissue', input, false);
+  }
+
+  async agentKeysList(input: { publicKey: string; challengeId: string; signature: string }): Promise<{
+    data: Array<{ id: string; pubkeyPrefix: string; label: string | null; algo: string; addedAt: string; revokedAt: string | null }>;
+  }> {
+    return this.request('POST', '/api/auth/agent/keys/list', input, false);
+  }
+
+  async agentKeysAdd(input: {
+    publicKey: string;
+    challengeId: string;
+    signature: string;
+    newPublicKey: string;
+    label?: string;
+  }): Promise<{ id: string; label: string | null; addedAt: string }> {
+    return this.request('POST', '/api/auth/agent/keys/add', input, false);
+  }
+
+  async agentKeyRevoke(input: {
+    publicKey: string;
+    challengeId: string;
+    signature: string;
+    keyPubkey: string;
+  }): Promise<{ revoked: string }> {
+    return this.request('POST', '/api/auth/agent/keys/revoke', input, false);
+  }
+
+  async agentClaimStart(input: {
+    publicKey: string;
+    challengeId: string;
+    signature: string;
+    email: string;
+  }): Promise<{ sent: boolean }> {
+    return this.request('POST', '/api/auth/agent/claim/start', input, false);
+  }
+
+  async agentClaimConfirm(input: {
+    publicKey: string;
+    challengeId: string;
+    signature: string;
+    email: string;
+    verificationCode: string;
+    newPassword: string;
+  }): Promise<{ token: string }> {
+    return this.request('POST', '/api/auth/agent/claim/confirm', input, false);
+  }
+
   async getMe(): Promise<Record<string, unknown>> {
     return this.request('GET', '/api/auth/me');
   }
