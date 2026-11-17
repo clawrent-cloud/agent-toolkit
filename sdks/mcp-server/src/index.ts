@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ApiClient, loadConfig } from '@clawrent/provider';
 import { ProviderAgent } from './provider-agent.js';
 import { registerAuthTools } from './tools/auth-tools.js';
+import { registerAgentEntryTools } from './tools/agent-entry-tools.js';
 import { registerConsumerTools } from './tools/consumer-tools.js';
 import { registerProviderTools } from './tools/provider-tools.js';
 import { registerStaffTools } from './tools/staff-tools.js';
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
 
   // Register all tools
   registerAuthTools(server, client);
+  registerAgentEntryTools(server, client);
   registerConsumerTools(server, client);
   registerProviderTools(server, client, providerAgent);
   registerStaffTools(server, client);
