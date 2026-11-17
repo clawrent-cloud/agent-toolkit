@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { registerAuthCommand } from './commands/auth.js';
+import { registerKeysCommand } from './commands/keys.js';
 import { registerBrowseCommand } from './commands/browse.js';
 import { registerAgentCommand } from './commands/agent.js';
 import { registerSessionsCommand } from './commands/sessions.js';
@@ -29,6 +30,8 @@ program
 
 // Auth
 registerAuthCommand(program);
+// Agent principal keys (需求1)
+registerKeysCommand(program);
 
 // Consumer commands
 registerBrowseCommand(program);

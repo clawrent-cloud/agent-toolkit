@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { createInterface } from 'node:readline';
-import { ApiClient, loadConfig, saveConfig, clearConfig, getConfigPath } from '@clawrent/provider';
+import { ApiClient, loadConfig, saveConfig, clearConfig, getConfigPath, generateAgentKeyPair, signChallenge, loadKeyPair, saveKeyPair } from '@clawrent/provider';
 import { printJson, printError, printSuccess } from '../output.js';
 
 /**
@@ -83,10 +83,45 @@ export function registerAuthCommand(program: Command): void {
     .option('-n, --name <name>', 'Display name')
     .option('-p, --password <password>', 'Password (min 8 chars). If omitted, prompts interactively.')
     .option('-c, --code <code>', '6-digit verification code. If omitted, sends code first and prompts.')
-    .action(async (opts: { email?: string; name?: string; password?: string; code?: string }) => {
+    .option('--agent', 'Agent self-registration: Ed25519 keypair identity, no email / no human (需求1). Key stored under ~/.clawrent/keys/.')
+    .action(async (opts: { email?: string; name?: string; password?: string; code?: string; agent?: boolean }) => {
       try {
         const currentConfig = loadConfig();
         const client = new ApiClient(currentConfig);
+
+        // ── Agent 自主注册:keypair 身份,无邮箱无验证码 ──
+        if (opts.agent) {
+          const name = opts.name ?? `agent-${Date.now().toString(36)}`;
+          if (loadKeyPair('default')) {
+            printError("Key 'default' already exists at ~/.clawrent/keys/ — use `clawrent keys add` for more keys, or remove/rename the existing key file to register a NEW account.");
+            process.exit(1);
+          }
+          const pair = generateAgentKeyPair();
+          const keyPath = saveKeyPair('default', pair);
+          printSuccess(`Ed25519 keypair generated → ${keyPath}`);
+          printSuccess('⚠️  Losing this key locks the account permanently (platform ruling D6). Back it up.');
+
+          const reg = await client.agentRegister({ name, publicKey: pair.publicKey });
+          const signature = await signChallenge(pair.privateKey, reg.challenge);
+          const result = await client.agentRegisterConfirm({ challengeId: reg.challengeId, signature });
+
+          saveConfig({
+            token: result.token,
+            apiKey: result.apiKey,
+            userId: result.user.id,
+            name: result.user.name,
+          });
+          printJson({
+            success: true,
+            user: result.user,
+            token: result.token,
+            apiKey: result.apiKey,
+            keyPath,
+            configSaved: getConfigPath(),
+            note: 'Unclaimed agent account: browse/serve/earn now; claim with `clawrent claim` (bind email + set password) to enable payouts.',
+          });
+          return;
+        }
 
         const email = opts.email ?? await promptInput('Email: ');
         const name = opts.name ?? await promptInput('Display name: ');
@@ -171,6 +206,53 @@ export function registerAuthCommand(program: Command): void {
           token: result.token,
           configSaved: getConfigPath(),
         });
+      } catch (err: unknown) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  auth
+    .command('claim')
+    .description('Claim an agent-registered account: bind an email + set a password (enables payouts)')
+    .option('-k, --key <name>', "Local key name (default: 'default')", 'default')
+    .option('-e, --email <email>', 'Email to bind')
+    .option('-c, --code <code>', '6-digit verification code (sent to the email)')
+    .option('-p, --password <password>', 'New password (min 8 chars)')
+    .action(async (opts: { key?: string; email?: string; code?: string; password?: string }) => {
+      try {
+        const pair = loadKeyPair(opts.key ?? 'default');
+        if (!pair) {
+          printError(`Key '${opts.key ?? 'default'}' not found under the keys dir. Agent accounts are claimed with their Ed25519 key.`);
+          process.exit(1);
+        }
+        const client = new ApiClient(loadConfig());
+
+        const ch = await client.agentChallenge(pair.publicKey);
+        const signature = await signChallenge(pair.privateKey, ch.challenge);
+        const email = opts.email ?? await promptInput('Email to bind: ');
+        await client.agentClaimStart({ publicKey: pair.publicKey, challengeId: ch.challengeId, signature, email });
+        printSuccess(`Verification code sent to ${email}.`);
+
+        const code = opts.code ?? await promptInput('Verification code: ');
+        const password = opts.password ?? await promptInput('New password (min 8 chars): ', true);
+        if (password.length < 8) {
+          printError('Password must be at least 8 characters');
+          process.exit(1);
+        }
+
+        const ch2 = await client.agentChallenge(pair.publicKey);
+        const signature2 = await signChallenge(pair.privateKey, ch2.challenge);
+        const result = await client.agentClaimConfirm({
+          publicKey: pair.publicKey,
+          challengeId: ch2.challengeId,
+          signature: signature2,
+          email,
+          verificationCode: code,
+          newPassword: password,
+        });
+        saveConfig({ token: result.token, email, name: undefined });
+        printJson({ success: true, email, token: result.token, configSaved: getConfigPath() });
       } catch (err: unknown) {
         printError(err instanceof Error ? err.message : String(err));
         process.exit(1);
