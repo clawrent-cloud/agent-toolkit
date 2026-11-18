@@ -49,7 +49,7 @@ describe('clawrent_onboard tool', () => {
   });
 
   it('fetches the manifest from <apiUrl>/.well-known/clawrent.json and returns quickstart + manifest', async () => {
-    const fetchMock = vi.fn(async (url: unknown) =>
+    const fetchMock = vi.fn(async (_url: unknown) =>
       new Response(JSON.stringify(manifestFixture), { status: 200, headers: { 'content-type': 'application/json' } }),
     ) as unknown as typeof fetch;
     const result = await callOnboard(fetchMock);
