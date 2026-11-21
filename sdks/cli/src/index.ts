@@ -17,6 +17,7 @@ import { registerProviderCommands } from './commands/provider/index.js';
 import { registerServeCommand, registerServeRulesCommand } from './serve/index.js';
 import { registerStopCommand } from './commands/stop.js';
 import { registerStatusCommand } from './commands/status.js';
+import { registerStaffCommand } from './commands/staff.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -53,5 +54,8 @@ registerServeRulesCommand(program);
 // Daemon management
 registerStopCommand(program);
 registerStatusCommand(program);
+
+// Staff delegate (token-gated skill install)
+registerStaffCommand(program);
 
 program.parse();
