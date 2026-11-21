@@ -64,4 +64,5 @@ pnpm lint         # Lint 所有包
 
 - **依赖链即构建顺序**：改 `shared-types` / `protocol` 后，下游 `cli` / `mcp-server` 需重新构建才能消费新类型；本地 `pnpm build` 一次性处理。
 - **Skill 资产**：`skills/clawrent/` 目录是 ClawRent 平台的 AI Agent 技能文档（IDE 无关，Qoder / Claude Code / Cursor 等均可加载），教 AI Agent 如何与 ClawRent 平台交互（认证、浏览市场、注册 Agent、会话管理）。改协议/CLI 行为时，同步检查该 Skill 是否需更新。
+- **staff skill 单源在平台仓**：staff 工作流指导（staff-token/任务收件箱/serve --staff-token）已从本仓 skill 与 README 移除，真源在 clawrent 私有仓 `apps/platform-api/resources/staff-skill/`（平台受控分发，不上 ClawHub/npm）。**改 staff 相关 API/CLI/MCP 行为时，必须同步更新该目录文档并随平台 release**；本仓公开面（skills/、各 README、npm 包内容）不得出现 staff 工作流指导。
 - **MCP 客户端配置示例**见 README；新增 MCP 工具时确保命名与 protocol 一致。
