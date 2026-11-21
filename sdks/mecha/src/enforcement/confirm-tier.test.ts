@@ -928,4 +928,133 @@ describe('computeTier（confirm-tier 判级）', () => {
     expect(hintOf(ws, 'pip3.11.exe', ['install', '.'])).toBe(EXEC_T1_TRANSITIVE_HINT);
     expect(hintOf(ws, 'myrunner.exe', ['install'])).toBeNull();
   });
+
+  // ── L2（2026-11-21 hardening）：program entry 策略字段驱动判级（只收紧）──
+
+  /** 带策略字段的 ok program ctx 构造（缺省字段行为见上方既有用例=现状）。 */
+  const okProgramWithEntry = (
+    absPath: string,
+    entry: Mecha.MechaProgramEntry,
+  ): ProgramGuardResult => ({ ok: true, absPath, entry });
+
+  it('L2：entry.tier="T2" → exec 一律 T2（benign argv 也红；先于其余判红信号）', () => {
+    const ws = makeWorkspace();
+    const absPath = join(ws, 'bin', 'npm.cmd');
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'npm',
+      absPath,
+      tier: 'T2',
+    };
+    expect(
+      computeTier(execOp(['npm', 'install'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 无旗标纯跑同样红（声明位与 argv 形态无关）
+    expect(
+      computeTier(execOp(['npm'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+  });
+
+  it('L2：argvPolicy.forbiddenSubcommands 首子命令命中 → T2；未命中 → T1（现状基线）', () => {
+    const ws = makeWorkspace();
+    const absPath = join(ws, 'bin', 'npm.cmd');
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'npm',
+      absPath,
+      argvPolicy: { forbiddenSubcommands: ['run', 'exec'] },
+    };
+    expect(
+      computeTier(execOp(['npm', 'run', 'build'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 旗标前置时首子命令仍取首个非 - 打头元素
+    expect(
+      computeTier(execOp(['npm', '--silent', 'exec', 'tsx'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 未命中清单 → T1（缺省字段=现状）
+    expect(
+      computeTier(execOp(['npm', 'install'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
+  it('L2：argvPolicy.requiredFlags 缺任一 → T2；整 token 或 flag=value 形在场 → T1', () => {
+    const ws = makeWorkspace();
+    const absPath = join(ws, 'bin', 'npm.cmd');
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'npm',
+      absPath,
+      argvPolicy: { requiredFlags: ['--ignore-scripts'] },
+    };
+    expect(
+      computeTier(execOp(['npm', 'install'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    expect(
+      computeTier(execOp(['npm', 'install', '--ignore-scripts'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T1');
+    expect(
+      computeTier(execOp(['npm', '--ignore-scripts=true', 'install'], ws), {
+        program: okProgramWithEntry(absPath, entry),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
+  it('L2：envPolicy.allowedKeys 外键 → T2；清单内照 T1；无 envPolicy 走现状（win32 键名折叠）', () => {
+    const ws = makeWorkspace();
+    const absPath = join(ws, 'bin', 'tool.exe');
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'tool',
+      absPath,
+      envPolicy: { allowedKeys: ['FOO', 'PATH'] },
+    };
+    const ctx = { program: okProgramWithEntry(absPath, entry), provenance: none };
+    expect(
+      computeTier(
+        { type: 'exec.run', argv: ['tool', 'x'], cwd: ws, env: { FOO: '1', PATH: 'y' } },
+        ctx,
+      ),
+    ).toBe('T1');
+    expect(
+      computeTier(
+        { type: 'exec.run', argv: ['tool', 'x'], cwd: ws, env: { FOO: '1', BAR: '2' } },
+        ctx,
+      ),
+    ).toBe('T2');
+    // win32 键名大小写折叠（与 EXEC_ENV_DENYLIST 同口径）；posix 精确匹配
+    const res = computeTier(
+      { type: 'exec.run', argv: ['tool', 'x'], cwd: ws, env: { foo: '1' } },
+      ctx,
+    );
+    if (process.platform === 'win32') {
+      expect(res).toBe('T1');
+    } else {
+      expect(res).toBe('T2');
+    }
+    // 无 envPolicy：env 非危险键照 T1（现状回归）
+    expect(
+      computeTier(
+        { type: 'exec.run', argv: ['tool', 'x'], cwd: ws, env: { ANYTHING: '1' } },
+        { program: okProgram(absPath), provenance: none },
+      ),
+    ).toBe('T1');
+  });
 });

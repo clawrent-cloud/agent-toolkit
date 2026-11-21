@@ -329,4 +329,37 @@ describe('matchProgram（程序白名单硬边界）', () => {
       CANONICAL(real),
     );
   });
+
+  // ── L2（2026-11-21 hardening）：命中条目随结果返回——判级器/executor 的
+  //    策略字段（tier/argvPolicy/envPolicy）消费源，不得在 executor 侧二次查表。
+
+  it('L2：裸名与绝对路径两路命中都返回完整条目对象（含策略字段）；拒不返回条目', () => {
+    const ws = makeWorkspace();
+    const real = plantProgram(ws, join('bin', 'npm.cmd'));
+    const entry = {
+      name: 'npm',
+      absPath: real,
+      tier: 'T2' as const,
+      argvPolicy: { appendFlags: ['--ignore-scripts'], forbiddenSubcommands: ['run'] },
+      envPolicy: { allowedKeys: ['PATH'] },
+    };
+
+    // 裸名命中：返回登记条目本体（同引用——策略字段零拷贝漂移）
+    const byName = matchProgram('npm', [entry]);
+    expect(byName.ok).toBe(true);
+    if (byName.ok) {
+      expect(byName.entry).toBe(entry);
+    }
+
+    // 绝对路径命中：返回命中条目（canonical 化 absPath + 该条目）
+    const byPath = matchProgram(real, [entry]);
+    expect(byPath.ok).toBe(true);
+    if (byPath.ok) {
+      expect(byPath.entry).toBe(entry);
+      expect(byPath.absPath).toBe(CANONICAL(real));
+    }
+
+    // 拒：无条目（expectDenied 的 toEqual 已钉死形状）
+    expectDenied(matchProgram('yarn', [entry]));
+  });
 });

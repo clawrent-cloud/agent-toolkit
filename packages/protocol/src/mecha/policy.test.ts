@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import {
   CapabilityManifestSchema,
   MechaPolicySchema,
+  MechaProgramEntrySchema,
   MECHA_LIMITS_DEFAULTS,
   type MechaPolicy,
   type CapabilityManifest,
@@ -119,5 +120,74 @@ describe('mecha policy & capability manifest schemas', () => {
     const noScratch: Record<string, unknown> = { ...manifest };
     delete noScratch['scratchDir'];
     expect(CapabilityManifestSchema.safeParse(noScratch).success).toBe(false);
+  });
+
+  // ── L2 program entry 策略字段（2026-11-21 hardening 增补，双端兼容）──────
+
+  it('L2：裸条目（无策略字段）照常通过且不产出策略字段——缺省全走现状', () => {
+    const r = MechaProgramEntrySchema.safeParse({
+      name: 'node',
+      absPath: join(DIR, 'node.exe'),
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).toEqual({ name: 'node', absPath: join(DIR, 'node.exe') });
+    }
+    // 嵌入 MechaPolicy 的 wire 形状同样通过
+    expect(
+      MechaPolicySchema.safeParse({
+        dirs: [DIR],
+        programs: [{ name: 'node', absPath: join(DIR, 'node.exe') }],
+        limits: MECHA_LIMITS_DEFAULTS,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('L2：tier/argvPolicy/envPolicy 全字段条目通过；tier 只收 T2 字面量（只收紧的声明位）', () => {
+    const full = {
+      name: 'npm',
+      absPath: join(DIR, 'npm.cmd'),
+      tier: 'T2',
+      argvPolicy: {
+        appendFlags: ['--ignore-scripts'],
+        forbiddenSubcommands: ['run', 'exec', 'start', 'test'],
+        requiredFlags: ['--ignore-scripts'],
+      },
+      envPolicy: { allowedKeys: ['PATH', 'NODE_ENV'] },
+    };
+    const ok = MechaPolicySchema.safeParse({
+      dirs: [DIR],
+      programs: [full],
+      limits: MECHA_LIMITS_DEFAULTS,
+    });
+    expect(ok.success).toBe(true);
+    // tier 非 'T2'（如 'T1'/'T0'）拒绝——声明位不存在放宽方向
+    for (const bogus of ['T1', 'T0', 't2', 2]) {
+      const bad = MechaProgramEntrySchema.safeParse({
+        name: 'npm',
+        absPath: join(DIR, 'npm.cmd'),
+        tier: bogus,
+      });
+      expect(bad.success, `tier=${String(bogus)}`).toBe(false);
+    }
+  });
+
+  it('L2：argvPolicy/envPolicy 内字段形状校验（字符串数组；非法形状拒绝）', () => {
+    for (const [field, value] of [
+      ['appendFlags', 'x'],
+      ['forbiddenSubcommands', 'run'],
+      ['requiredFlags', 1],
+      ['allowedKeys', 'PATH'],
+    ] as const) {
+      const entry: Record<string, unknown> = {
+        name: 'npm',
+        absPath: join(DIR, 'npm.cmd'),
+      };
+      const holder = field === 'allowedKeys'
+        ? ((entry['envPolicy'] = { [field]: value }), entry)
+        : ((entry['argvPolicy'] = { [field]: value }), entry);
+      const r = MechaProgramEntrySchema.safeParse(holder);
+      expect(r.success, `${field}=${String(value)}`).toBe(false);
+    }
   });
 });

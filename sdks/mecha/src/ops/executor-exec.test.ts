@@ -499,4 +499,50 @@ describe('exec.run 确认卡：传递执行风险提示线（D3/D4 裁定 2026-1
     expect(s3.startsWith(RED_DISCLOSURE)).toBe(true);
     expect(s3).not.toContain(EXEC_T1_TRANSITIVE_HINT);
   });
+
+  it('L2：entry.tier="T2" 接线 → 良性 argv 判 T2；argvPolicy.appendFlags → 注入贯穿卡面与 spawn argv', async () => {
+    // ① tier 声明位：benign exec 判 T2（deny 路径断言卡面，不 spawn）
+    const hDeny = makeHarness({
+      programs: [
+        NODE,
+        { name: 'npm', absPath: join(tmpdir(), 'mecha-npm-stub', 'npm.cmd'), tier: 'T2' as const },
+      ],
+      confirmApproved: false,
+    });
+    const r1 = await hDeny.executor.execute(
+      env({ type: 'exec.run', argv: ['npm', 'install'], cwd: '.' }),
+    );
+    expect(r1.error?.code).toBe('CONFIRM_DENIED');
+    expect(hDeny.confirm.mock.calls[0]![0].tier).toBe('T2');
+    expect(hDeny.confirm.mock.calls[0]![0].summary.startsWith(RED_DISCLOSURE)).toBe(true);
+
+    // ② appendFlags（仅平台显式下发才注入——D3 裁定）：卡面显示 effective
+    // argv，spawn 真带注入旗标（dump 脚本回显 process.argv 闭环证明）
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'node',
+      absPath: process.execPath,
+      argvPolicy: { appendFlags: ['--injected-marker'] },
+    };
+    const h = makeHarness({ programs: [entry] });
+    const dump = join(h.ws, 'argv-dump.cjs');
+    fs.writeFileSync(
+      dump,
+      "console.log('ARGV:' + JSON.stringify(process.argv.slice(1)));",
+    );
+    const r2 = await h.executor.execute(
+      env({ type: 'exec.run', argv: ['node', 'argv-dump.cjs'], cwd: '.' }),
+    );
+    expect(r2.ok).toBe(true);
+    // 卡面含注入旗标（effective argv 展示，Review Focus #4）
+    expect(h.confirm.mock.calls[0]![0].summary).toContain('--injected-marker');
+    // spawn argv 闭环：子进程实际收到
+    expect(joined(h.chunks, 'stdout')).toContain('--injected-marker');
+    // 无 appendFlags 的现状：不注入（负对照）
+    const h2 = makeHarness();
+    fs.writeFileSync(join(h2.ws, 'argv-dump.cjs'), "console.log('ARGV:' + JSON.stringify(process.argv.slice(1)));");
+    await h2.executor.execute(
+      env({ type: 'exec.run', argv: ['node', 'argv-dump.cjs'], cwd: '.' }),
+    );
+    expect(h2.confirm.mock.calls[0]![0].summary).not.toContain('--injected-marker');
+  });
 });

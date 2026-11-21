@@ -263,6 +263,25 @@ const EXEC_ENV_DENYLIST: readonly string[] = [
 ];
 
 /**
+ * L2 env 裁剪策略判定（2026-11-21 hardening）：op.env 出现 allowedKeys 清单
+ * 外键 → 违规（T2）。win32 键名大小写折叠（与 EXEC_ENV_DENYLIST 同口径，
+ * 两侧不允许漂移）；无策略/无 env → 不违规（缺省=现状）。
+ */
+function envPolicyViolation(
+  env: Record<string, string> | undefined,
+  policy: Mecha.MechaEnvPolicy | undefined,
+): boolean {
+  const allowedKeys = policy?.allowedKeys;
+  if (allowedKeys === undefined || env === undefined) return false;
+  if (WIN32) {
+    const allowed = new Set(allowedKeys.map((k) => k.toLowerCase()));
+    return Object.keys(env).some((k) => !allowed.has(k.toLowerCase()));
+  }
+  const allowed = new Set(allowedKeys);
+  return Object.keys(env).some((k) => !allowed.has(k));
+}
+
+/**
  * op.env 的危险键命中检测：返回命中的**规范键名**（denylist 侧拼写，供确认
  * 卡披露「环境变量含 <键>」；win32 上驱动的大小写变体同样归一到规范名）。
  * env 缺省/无命中 → 空表。computeTier 的 exec 分支与 executor 的确认摘要
@@ -468,7 +487,9 @@ function isInterpreterInline(absPath: string, argv: string[]): boolean {
   return false;
 }
 
-/** exec 判级（见文件头判级表①-④）。 */
+/** exec 判级（见文件头判级表①-④）。L2 entry 级策略信号（2026-11-21
+ * hardening：tier/argvPolicy/envPolicy——平台下发、本地强制、只收紧）在
+ * ①硬拒之后、其余信号之前消费；缺省字段全走现状。 */
 function execTier(
   op: Extract<Mecha.MechaOp, { type: 'exec.run' }>,
   ctx: ComputeTierContext,
@@ -478,11 +499,39 @@ function execTier(
     return { deny: PROGRAM_DENIED };
   }
 
+  // ①′ L2 声明位：平台钉死该程序一律 T2（benign argv 也红——只收紧）
+  if (ctx.program.entry?.tier === 'T2') {
+    return 'T2';
+  }
+
+  // ①″ L2 env 裁剪策略：op.env 出现 allowedKeys 清单外键 → T2（win32 键名
+  // 折叠与 EXEC_ENV_DENYLIST 同口径；无策略/无 env → 不违规）
+  if (envPolicyViolation(op.env, ctx.program.entry?.envPolicy)) {
+    return 'T2';
+  }
+
   // ②′ 环境注入通道（R28）：op.env 命中危险键 → T2——env 值不进确认卡面，
   // 危险键是绕过卡面的启动时代码加载通道；红卡而非剥离（披露后由消费者
   // 定夺）。独立判红信号：与内联/溯源互不排斥，先到先红。
   if (denylistedExecEnvKeys(op.env).length > 0) {
     return 'T2';
+  }
+
+  // ②″ L2 argv 策略：首子命令命中 forbiddenSubcommands / requiredFlags 缺任
+  // 一（整 token 或 flag=value 形在场均算）→ T2
+  const argvPolicy = ctx.program.entry?.argvPolicy;
+  if (argvPolicy !== undefined) {
+    const args = op.argv.slice(1);
+    if (argvPolicy.forbiddenSubcommands !== undefined) {
+      const firstSub = args.find((a) => !a.startsWith('-'));
+      if (firstSub !== undefined && argvPolicy.forbiddenSubcommands.includes(firstSub)) {
+        return 'T2';
+      }
+    }
+    for (const flag of argvPolicy.requiredFlags ?? []) {
+      const present = args.some((a) => a === flag || a.startsWith(`${flag}=`));
+      if (!present) return 'T2';
+    }
   }
 
   // ② 解释器内联模式 → T2（argv[0] 合法也必须红）

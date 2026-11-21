@@ -36,10 +36,38 @@ const AbsolutePathSchema = z
   .string()
   .refine((p) => isAbsolute(p) || win32.isAbsolute(p), { message: 'must be an absolute path' });
 
-/** 程序白名单条目:裸名 → 钉死的登记真身绝对路径(永不文件系统搜索)。 */
+/** argv 策略（L2 程序条目级，2026-11-21 hardening 增补）：平台下发、机甲本地
+ * 强制；全部 optional——缺省=现状。语义红线：forbiddenSubcommands/
+ * requiredFlags 只收紧；appendFlags 为平台/消费者侧主动选择（如 npm
+ * `--ignore-scripts`；D3 裁定默认不注入，仅显式下发生效）。 */
+export const MechaArgvPolicySchema = z.object({
+  /** executor 在 spawn 前追加到 argv 尾部的旗标（仅平台显式下发才注入）。 */
+  appendFlags: z.array(z.string()).optional(),
+  /** 首子命令 token（argv[1..] 首个非 `-` 打头元素）命中任一 → T2。 */
+  forbiddenSubcommands: z.array(z.string()).optional(),
+  /** argv 缺任一必附旗标（整 token 或 `flag=value` 形均算在场）→ T2。 */
+  requiredFlags: z.array(z.string()).optional(),
+});
+export type MechaArgvPolicy = z.infer<typeof MechaArgvPolicySchema>;
+
+/** env 策略（L2）：op.env 出现 allowedKeys 清单外键 → T2（win32 键名大小写
+ * 不敏感，与 EXEC_ENV_DENYLIST 同口径）。 */
+export const MechaEnvPolicySchema = z.object({
+  allowedKeys: z.array(z.string()).optional(),
+});
+export type MechaEnvPolicy = z.infer<typeof MechaEnvPolicySchema>;
+
+/** 程序白名单条目:裸名 → 钉死的登记真身绝对路径(永不文件系统搜索)。
+ * L2 策略字段（tier/argvPolicy/envPolicy）全部 optional：旧平台裸条目照常
+ * （缺省全走现状）；新字段条目在旧机甲侧被 zod strip → 降级为现状（optional
+ * 起步的兼容语义，双端任一端旧版本均不破）。 */
 export const MechaProgramEntrySchema = z.object({
   name: z.string(),
   absPath: AbsolutePathSchema,
+  /** 平台声明该程序一律 T2（只收紧的声明位；唯一合法值 'T2'）。 */
+  tier: z.literal('T2').optional(),
+  argvPolicy: MechaArgvPolicySchema.optional(),
+  envPolicy: MechaEnvPolicySchema.optional(),
 });
 export type MechaProgramEntry = z.infer<typeof MechaProgramEntrySchema>;
 

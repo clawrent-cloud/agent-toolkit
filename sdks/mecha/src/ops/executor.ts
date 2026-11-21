@@ -513,6 +513,16 @@ export class MechaExecutor {
   ): Promise<Mecha.MechaOpResult> {
     // argv[0] schema 恒非空（min(1)）；`?? ''` 仅类型收窄（空串非裸名必拒）
     const program = matchProgram(op.argv[0] ?? '', this.deps.policy().programs);
+    // L2（2026-11-21 hardening）：平台显式下发的 argvPolicy.appendFlags →
+    // 追加到 argv 尾部（D3 裁定：默认不注入，仅显式下发生效）。effective
+    // argv 贯穿判级/卡面显示/remember 键/spawn——单一宇宙无漂移；注入旗标是
+    // 平台常量，溯源/内联扫描对其误红属 fail-safe 方向。
+    if (program.ok) {
+      const appendFlags = program.entry?.argvPolicy?.appendFlags;
+      if (appendFlags !== undefined && appendFlags.length > 0) {
+        op = { ...op, argv: [...op.argv, ...appendFlags] };
+      }
+    }
     const cwd = this.resolveFsPath(op.cwd);
     const opForTier: OpOf<'exec.run'> = cwd.ok ? { ...op, cwd: cwd.real } : op;
     const tier = computeTier(opForTier, {

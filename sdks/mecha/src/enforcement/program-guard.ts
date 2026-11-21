@@ -35,9 +35,12 @@ import { comparableForm, realpathCanonical } from './path-guard.js';
  */
 
 /** 程序表命中（带授权执行的真实程序绝对路径）或硬拒（协议七码之一
- * PROGRAM_DENIED）。 */
+ * PROGRAM_DENIED）。`entry` 为命中条目本体（L2 2026-11-21 hardening）：策略
+ * 字段（tier/argvPolicy/envPolicy）的唯一消费源——判级器与 executor 据此
+ * 强制，不得另行二次查表（防匹配口径漂移）。optional 仅为裸 ctx 的类型
+ * 完备（测试/旧调用方），真执行流恒由 matchProgram 产出。 */
 export type ProgramGuardResult =
-  | { ok: true; absPath: string }
+  | { ok: true; absPath: string; entry?: Mecha.MechaProgramEntry }
   | { ok: false; code: 'PROGRAM_DENIED' };
 
 /** 协议单一事实源取码；返回类型已把 code 钉死为 'PROGRAM_DENIED'——协议七码
@@ -75,7 +78,7 @@ export function matchProgram(
   if (isBareName(argv0)) {
     const hit = programs.find((entry) => entry.name === argv0);
     return hit
-      ? { ok: true, absPath: hit.absPath } // 登记真身原样返回
+      ? { ok: true, absPath: hit.absPath, entry: hit } // 登记真身原样返回 + 条目本体（L2 策略消费源）
       : { ok: false, code: PROGRAM_DENIED };
   }
 
@@ -99,7 +102,7 @@ export function matchProgram(
       continue; // 登记真身不存在/不可真实化——不构成授权（fail-closed）
     }
     if (comparableForm(real) === comparableForm(entryReal)) {
-      return { ok: true, absPath: real }; // 检查对象即操作对象：返回真实化产物
+      return { ok: true, absPath: real, entry }; // 检查对象即操作对象：返回真实化产物 + 命中条目
     }
   }
   return { ok: false, code: PROGRAM_DENIED };
