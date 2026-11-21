@@ -43,9 +43,11 @@ const AbsolutePathSchema = z
 export const MechaArgvPolicySchema = z.object({
   /** executor 在 spawn 前追加到 argv 尾部的旗标（仅平台显式下发才注入）。 */
   appendFlags: z.array(z.string()).optional(),
-  /** 首子命令 token（argv[1..] 首个非 `-` 打头元素）命中任一 → T2。 */
+  /** 子命令 token 在 argv 任意位置精确命中任一 → T2（全 token 扫描：取值
+   * 全局旗标藏不住子命令；值参数与禁词同名的误红属宁误红方向）。 */
   forbiddenSubcommands: z.array(z.string()).optional(),
-  /** argv 缺任一必附旗标（整 token 或 `flag=value` 形均算在场）→ T2。 */
+  /** argv 缺任一必附旗标 → T2。在场口径：整 token，或 `flag=value` 形且值
+   * 非关闭式（''/'0'/'false' 不算在场——`--x=false` 对消必附旗标 = 缺席）。 */
   requiredFlags: z.array(z.string()).optional(),
 });
 export type MechaArgvPolicy = z.infer<typeof MechaArgvPolicySchema>;

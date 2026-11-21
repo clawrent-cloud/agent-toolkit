@@ -331,7 +331,9 @@ const TRANSITIVE_WHOLE_PROGRAM: ReadonlySet<string> = new Set([
   'cargo',
 ]);
 
-/** git 钩子承载子命令：这些操作执行 `.git/hooks/*`（驾驶员可 fs.write 植入）。 */
+/** git 钩子承载子命令：这些操作执行 `.git/hooks/*`（驾驶员可 fs.write 植入）
+ * ——commit 族外，checkout/switch/worktree 跑 post-checkout、filter-branch
+ * 跑过滤命令、gc/maintenance 可触 pre-auto-gc（终审补口）。 */
 const GIT_HOOK_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'commit',
   'merge',
@@ -340,6 +342,12 @@ const GIT_HOOK_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'push',
   'am',
   'hook',
+  'checkout',
+  'switch',
+  'worktree',
+  'filter-branch',
+  'gc',
+  'maintenance',
 ]);
 
 /** git 内置命令快照（v0 钉死；来源 git 常用命令面）。清单外首词按 alias 通道
@@ -349,29 +357,32 @@ const GIT_BUILTINS: ReadonlySet<string> = new Set([
   'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch',
   'bugreport', 'bundle', 'cat-file', 'check-attr', 'check-ignore',
   'check-mailmap', 'check-ref-format', 'checkout', 'checkout-index', 'cherry',
-  'cherry-pick', 'citool', 'clean', 'clone', 'column', 'commit', 'config',
+  'cherry-pick', 'citool', 'clean', 'clone', 'column', 'commit',
+  'commit-graph', 'config',
   'count-objects', 'credential', 'credential-cache', 'credential-store',
   'describe', 'diagnose', 'diff', 'difftool', 'fast-export', 'fast-import',
-  'fetch', 'filter-branch', 'fmt-merge-msg', 'for-each-ref', 'format-patch',
+  'fetch', 'filter-branch', 'fmt-merge-msg', 'for-each-ref', 'for-each-repo',
+  'format-patch',
   'fsck', 'fsmonitor--daemon', 'gc', 'get-tar-commit-id', 'grep', 'gui',
   'hash-object', 'help', 'hook', 'http-backend', 'http-fetch', 'http-push',
   'imap-send', 'index-pack', 'init', 'init-db', 'instaweb',
   'interpret-trailers', 'log', 'ls-files', 'ls-remote', 'ls-tree', 'mailinfo',
   'mailsplit', 'maintenance', 'merge', 'merge-base', 'merge-file',
   'merge-index', 'merge-octopus', 'merge-one-file', 'merge-ours',
-  'merge-recursive', 'merge-resolve', 'merge-tree', 'mktag', 'mktree', 'mv',
-  'name-rev', 'notes', 'p4', 'pack-objects', 'pack-redundant', 'pack-refs',
-  'patch-id', 'prune', 'prune-packed', 'pull', 'push', 'quiltimport',
-  'range-diff', 'read-tree', 'rebase', 'reflog', 'relink', 'remote',
-  'remote-ext', 'remote-fd', 'repack', 'replace', 'request-pull', 'rerere',
-  'reset', 'restore', 'rev-list', 'rev-parse', 'revert', 'rm', 'send-email',
-  'send-pack', 'sh-i18n', 'sh-setup', 'shortlog', 'show', 'show-branch',
-  'show-index', 'show-ref', 'sparse-checkout', 'stage', 'stash', 'status',
-  'stripspace', 'submodule', 'svn', 'switch', 'symbolic-ref', 'tag',
-  'unpack-file', 'unpack-objects', 'update-index', 'update-ref',
-  'update-server-info', 'upload-archive', 'upload-pack', 'var',
-  'verify-commit', 'verify-pack', 'verify-tag', 'version', 'whatchanged',
-  'worktree', 'write-tree',
+  'merge-recursive', 'merge-resolve', 'merge-tree', 'mergetool', 'mktag',
+  'mktree', 'mv',
+  'multi-pack-index', 'name-rev', 'notes', 'p4', 'pack-objects',
+  'pack-redundant', 'pack-refs', 'patch-id', 'prune', 'prune-packed', 'pull',
+  'push', 'quiltimport', 'range-diff', 'read-tree', 'rebase', 'receive-pack',
+  'reflog', 'relink', 'remote', 'remote-ext', 'remote-fd', 'repack',
+  'replace', 'request-pull', 'rerere', 'reset', 'restore', 'rev-list',
+  'rev-parse', 'revert', 'rm', 'scalar', 'send-email', 'send-pack', 'sh-i18n',
+  'sh-setup', 'shortlog', 'show', 'show-branch', 'show-index', 'show-ref',
+  'sparse-checkout', 'stage', 'stash', 'status', 'stripspace', 'submodule',
+  'svn', 'switch', 'symbolic-ref', 'tag', 'unpack-file', 'unpack-objects',
+  'update-index', 'update-ref', 'update-server-info', 'upload-archive',
+  'upload-pack', 'var', 'verify-commit', 'verify-pack', 'verify-tag',
+  'version', 'whatchanged', 'worktree', 'write-tree',
 ]);
 
 /** git 全局旗标中吃掉下一参数的清单（子命令扫描时跳过其值参数）。 */
@@ -382,15 +393,17 @@ const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
   '--work-tree',
 ]);
 
-/** pip 目录形态实参：`.`/`..`、含路径分隔符（含 `./x`、`../x`、VCS URL）、
- * 绝对路径（posix 或 win32 任一口径）。registry 包名（`pkg==1.0` 等）不含
- * 分隔符，不误报。 */
+/** pip 本地形态实参：`.`/`..`、含路径分隔符（含 `./x`、`../x`、VCS URL）、
+ * 绝对路径（posix 或 win32 任一口径）、裸 sdist/zip 文件名（`evil-1.0.tar.gz`
+ * ——cwd 内本地工件，安装即执行其构建文件；终审补口）。registry 包名
+ * （`pkg==1.0` 等）不含分隔符也不带归档扩展名，不误报。 */
 function pipDirShapedArg(arg: string): boolean {
   return (
     arg === '.' ||
     arg === '..' ||
     arg.includes('/') ||
     arg.includes('\\') ||
+    /\.(tar(\.(gz|bz2|xz))?|zip)$/i.test(arg) ||
     path.isAbsolute(arg) ||
     path.win32.isAbsolute(arg)
   );
@@ -517,19 +530,28 @@ function execTier(
     return 'T2';
   }
 
-  // ②″ L2 argv 策略：首子命令命中 forbiddenSubcommands / requiredFlags 缺任
-  // 一（整 token 或 flag=value 形在场均算）→ T2
+  // ②″ L2 argv 策略：forbiddenSubcommands 全 token 精确命中 / requiredFlags
+  // 缺任一 → T2。全 token 扫描（终审 fix #2）：子命令必然以独立 token 抵达，
+  // 任何位置命中即红——`git -C dir push`/`npm -w pkg run x` 的取值全局旗标
+  // 藏不住子命令；值参数偶与禁词同名的误红落在宁误红方向（平台自选清单）。
+  // requiredFlags 的 `flag=value` 形仅当值非关闭式（''/'0'/'false'，大小写
+  // 折叠）才算在场（终审 fix #1）：`--x=false` 对消必附旗标 = 缺席 → 红。
   const argvPolicy = ctx.program.entry?.argvPolicy;
   if (argvPolicy !== undefined) {
     const args = op.argv.slice(1);
     if (argvPolicy.forbiddenSubcommands !== undefined) {
-      const firstSub = args.find((a) => !a.startsWith('-'));
-      if (firstSub !== undefined && argvPolicy.forbiddenSubcommands.includes(firstSub)) {
-        return 'T2';
-      }
+      const forbidden = new Set(argvPolicy.forbiddenSubcommands);
+      if (args.some((a) => forbidden.has(a))) return 'T2';
     }
     for (const flag of argvPolicy.requiredFlags ?? []) {
-      const present = args.some((a) => a === flag || a.startsWith(`${flag}=`));
+      const present = args.some(
+        (a) =>
+          a === flag ||
+          (a.startsWith(`${flag}=`) &&
+            !['', '0', 'false'].includes(
+              a.slice(flag.length + 1).toLowerCase(),
+            )),
+      );
       if (!present) return 'T2';
     }
   }

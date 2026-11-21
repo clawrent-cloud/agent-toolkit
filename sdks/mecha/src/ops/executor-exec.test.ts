@@ -35,6 +35,7 @@ interface Harness {
   executor: MechaExecutor;
   confirm: ReturnType<typeof vi.fn>;
   logOp: ReturnType<typeof vi.fn>;
+  logOpStart: ReturnType<typeof vi.fn>;
   provenance: ProvenanceStore;
   limits: Mecha.MechaLimits;
   ws: string;
@@ -66,7 +67,8 @@ function makeHarness(opts?: {
     }),
   );
   const logOp = vi.fn();
-  const log: ExecutorLogger = { logOpStart: vi.fn(), logOp };
+  const logOpStart = vi.fn();
+  const log: ExecutorLogger = { logOpStart, logOp };
   const chunks: Mecha.MechaExecChunk[] = [];
   const executor = new MechaExecutor({
     policy: () => ({ dirs, programs, limits }),
@@ -78,7 +80,7 @@ function makeHarness(opts?: {
       chunks.push(chunk);
     },
   });
-  return { executor, confirm, logOp, provenance, limits, ws, realWs, scratchDir, chunks };
+  return { executor, confirm, logOp, logOpStart, provenance, limits, ws, realWs, scratchDir, chunks };
 }
 
 function env(op: Mecha.MechaOp, opId = 'op-1'): Mecha.MechaOpEnvelope {
@@ -524,6 +526,12 @@ describe('exec.run 确认卡：传递执行风险提示线（D3/D4 裁定 2026-1
       argvPolicy: { appendFlags: ['--injected-marker'] },
     };
     const h = makeHarness({ programs: [entry] });
+    // opStart 锚点断言需即时快照（mock.calls 存引用，exec 注入会就地改写
+    // envelope.op——生产 DashcamLogger 同步序列化，wire 形态在改写前已落盘）
+    const startSnapshots: Mecha.MechaOpEnvelope[] = [];
+    h.logOpStart.mockImplementation((e: Mecha.MechaOpEnvelope) => {
+      startSnapshots.push(JSON.parse(JSON.stringify(e)) as Mecha.MechaOpEnvelope);
+    });
     const dump = join(h.ws, 'argv-dump.cjs');
     fs.writeFileSync(
       dump,
@@ -533,10 +541,24 @@ describe('exec.run 确认卡：传递执行风险提示线（D3/D4 裁定 2026-1
       env({ type: 'exec.run', argv: ['node', 'argv-dump.cjs'], cwd: '.' }),
     );
     expect(r2.ok).toBe(true);
-    // 卡面含注入旗标（effective argv 展示，Review Focus #4）
+    // 卡面含注入旗标（effective argv 展示 + 恒可见注入说明行——截断区兜底，
+    // review fix #5）
     expect(h.confirm.mock.calls[0]![0].summary).toContain('--injected-marker');
+    expect(h.confirm.mock.calls[0]![0].summary).toContain('平台策略注入旗标');
     // spawn argv 闭环：子进程实际收到
     expect(joined(h.chunks, 'stdout')).toContain('--injected-marker');
+    // 审计同宇宙（review fix #3）：结果行（logOp）落 effective argv；请求锚点
+    // （logOpStart）保留驱动 wire 形态
+    const resultEnvelope = h.logOp.mock.calls[0]![0] as Mecha.MechaOpEnvelope;
+    expect(resultEnvelope.op.type).toBe('exec.run');
+    expect(resultEnvelope.op).toMatchObject({
+      argv: expect.arrayContaining(['--injected-marker']),
+    });
+    const startEnvelope = startSnapshots[0]!;
+    expect(startEnvelope.op.type).toBe('exec.run');
+    expect(startEnvelope.op).not.toMatchObject({
+      argv: expect.arrayContaining(['--injected-marker']),
+    });
     // 无 appendFlags 的现状：不注入（负对照）
     const h2 = makeHarness();
     fs.writeFileSync(join(h2.ws, 'argv-dump.cjs'), "console.log('ARGV:' + JSON.stringify(process.argv.slice(1)));");

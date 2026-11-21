@@ -254,9 +254,6 @@ export class MechaSession {
    * 的策略/执行器/审计流上。 */
   private activeSessionId: string | null = null;
 
-  /** T1-remember 记忆集（I3 fix，spec §5.3）：本会话内消费者勾选「不再
-   * 确认」的 exec 程序真身（matchProgram 产物 absPath）。仅 T1 exec 命中；
-   * T2（上传脚本/内联/溯源红）永不入集。集随终局清空——新 offer = 新集。 */
   /** T1-remember 记忆集（I3；D2 裁定 2026-11-21 收紧为精确复现）：键 =
    * execRememberKey（程序真身 + 完整 argv + cwd 逐字拼接）。换任何参数/
    * 目录/程序都重新确认——「批过 npm 后 npm run 任意命令静默」的跨命令

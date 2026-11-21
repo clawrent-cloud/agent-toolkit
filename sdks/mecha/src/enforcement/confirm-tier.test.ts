@@ -1057,4 +1057,91 @@ describe('computeTier（confirm-tier 判级）', () => {
       ),
     ).toBe('T1');
   });
+
+  // ── 终审修复（2026-11-21 review fix #1/#2 + git·pip 提示补口）──────────────
+
+  it('L2 review#1：requiredFlags 的 `flag=false`/`=0`/空值关闭式不算在场 → T2；=true/整 token 算', () => {
+    const ws = makeWorkspace();
+    const absPath = join(ws, 'bin', 'npm.cmd');
+    const entry: Mecha.MechaProgramEntry = {
+      name: 'npm',
+      absPath,
+      argvPolicy: { requiredFlags: ['--ignore-scripts'] },
+    };
+    const ctx = { program: okProgramWithEntry(absPath, entry), provenance: none };
+    // 关闭式对消：驱动用 `=false` 假装满足必附旗标 → 必须红
+    for (const bad of ['--ignore-scripts=false', '--ignore-scripts=0', '--ignore-scripts=']) {
+      expect(
+        computeTier(execOp(['npm', 'install', bad], ws), ctx),
+        bad,
+      ).toBe('T2');
+    }
+    // 大小写变形的关闭式（fail-red 方向折叠）
+    expect(computeTier(execOp(['npm', 'install', '--ignore-scripts=FALSE'], ws), ctx)).toBe('T2');
+    // 开启式与整 token 照算在场
+    expect(computeTier(execOp(['npm', 'install', '--ignore-scripts=true'], ws), ctx)).toBe('T1');
+    expect(computeTier(execOp(['npm', 'install', '--ignore-scripts'], ws), ctx)).toBe('T1');
+  });
+
+  it('L2 review#2：forbiddenSubcommands 全 token 扫描——取值全局旗标藏不住子命令（git -C dir push / npm -w pkg run）', () => {
+    const ws = makeWorkspace();
+    const gitPath = join(ws, 'bin', 'git.exe');
+    const gitEntry: Mecha.MechaProgramEntry = {
+      name: 'git',
+      absPath: gitPath,
+      argvPolicy: { forbiddenSubcommands: ['push'] },
+    };
+    // 最惯用的脚本化形态：-C 的值参数在首词位，旧「首词扫描」会取到值而非子命令
+    expect(
+      computeTier(execOp(['git', '-C', 'proj', 'push'], ws), {
+        program: okProgramWithEntry(gitPath, gitEntry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    const npmPath = join(ws, 'bin', 'npm.cmd');
+    const npmEntry: Mecha.MechaProgramEntry = {
+      name: 'npm',
+      absPath: npmPath,
+      argvPolicy: { forbiddenSubcommands: ['run'] },
+    };
+    expect(
+      computeTier(execOp(['npm', '--workspace', 'pkg', 'run', 'x'], ws), {
+        program: okProgramWithEntry(npmPath, npmEntry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 值参数偶与禁词同名 → 误红（宁误红方向，平台自选清单自担）
+    expect(
+      computeTier(execOp(['npm', 'install', 'run'], ws), {
+        program: okProgramWithEntry(npmPath, npmEntry),
+        provenance: none,
+      }),
+    ).toBe('T2');
+    // 无禁词照 T1
+    expect(
+      computeTier(execOp(['npm', 'install'], ws), {
+        program: okProgramWithEntry(npmPath, npmEntry),
+        provenance: none,
+      }),
+    ).toBe('T1');
+  });
+
+  it('review 补口：git 钩子承载词补 checkout/switch/worktree/filter-branch/gc/maintenance；pip sdist 本地文件名提示', () => {
+    const ws = makeWorkspace();
+    // post-checkout 钩子在 checkout/switch/worktree add 都会执行；filter-branch
+    // 执行过滤命令；gc/maintenance 可触 pre-auto-gc
+    for (const sub of ['checkout', 'switch', 'worktree', 'filter-branch', 'gc', 'maintenance']) {
+      expect(hintOf(ws, 'git.exe', [sub, 'x']), sub).toBe(EXEC_T1_TRANSITIVE_HINT);
+    }
+    // 新补内置词不触发 alias 误提示
+    expect(hintOf(ws, 'git.exe', ['mergetool'])).toBeNull();
+    // pip 本地 sdist 文件名（裸文件名无路径分隔符，setup.py 构建执行通道）
+    expect(hintOf(ws, 'pip.exe', ['install', 'evil-1.0.tar.gz'])).toBe(
+      EXEC_T1_TRANSITIVE_HINT,
+    );
+    expect(hintOf(ws, 'pip.exe', ['install', 'pkg.zip'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip.exe', ['install', 'evil-1.0.tar'])).toBe(
+      EXEC_T1_TRANSITIVE_HINT,
+    );
+  });
 });

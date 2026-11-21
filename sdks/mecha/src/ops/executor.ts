@@ -94,7 +94,10 @@ import type { ProvenanceStore } from '../enforcement/provenance.js';
  */
 
 /** 行车记录最小接口（R8 裁定 + R19 补锚点）：Task 13 DashcamLogger 结构满足
- * 之，避免 executor 前向依赖 logging 模块。 */
+ * 之，避免 executor 前向依赖 logging 模块。契约：回调须**即时序列化**（调用
+ * 点同步落盘）——exec 的 L2 appendFlags 注入会在 logOpStart 之后就地改写
+ * `envelope.op` 为 effective argv，持有引用而非快照的日志器会让 opStart 行
+ * 丢失驱动 wire 形态。 */
 export interface ExecutorLogger {
   /** 执行锚点（R19，binding）：op 进入执行流（判级前）即落一行——「任何被
    * 考虑执行的 op 至少留一行」；被会话终局收割的 op（结果行未及落盘）由
@@ -517,10 +520,16 @@ export class MechaExecutor {
     // 追加到 argv 尾部（D3 裁定：默认不注入，仅显式下发生效）。effective
     // argv 贯穿判级/卡面显示/remember 键/spawn——单一宇宙无漂移；注入旗标是
     // 平台常量，溯源/内联扫描对其误红属 fail-safe 方向。
+    let injectedFlags: string[] | null = null;
     if (program.ok) {
       const appendFlags = program.entry?.argvPolicy?.appendFlags;
       if (appendFlags !== undefined && appendFlags.length > 0) {
         op = { ...op, argv: [...op.argv, ...appendFlags] };
+        injectedFlags = appendFlags;
+        // 审计同宇宙（终审 fix #3）：就地改写信封 op——execute 的 logOp（结果
+        // 行）随 effective argv 落账；dispatch 的 logOpStart 已先行落驱动
+        // wire 形态（请求锚点），两行各司其职。
+        envelope.op = op;
       }
     }
     const cwd = this.resolveFsPath(op.cwd);
@@ -540,7 +549,7 @@ export class MechaExecutor {
     if (!program.ok) {
       return fail(envelope.opId, PROGRAM_DENIED, DENY_MESSAGE.PROGRAM_DENIED, tier);
     }
-    return this.execRun(op, envelope, tier, program.absPath, cwd);
+    return this.execRun(op, envelope, tier, program.absPath, cwd, injectedFlags);
   }
 
   /**
@@ -850,13 +859,14 @@ export class MechaExecutor {
     tier: 'T1' | 'T2',
     absPath: string,
     cwd: PathGuardResult,
+    injectedFlags: string[] | null,
   ): Promise<Mecha.MechaOpResult> {
     if (this.execBusy) {
       return fail(envelope.opId, IO_ERROR, 'exec busy');
     }
     this.execBusy = true;
     try {
-      return await this.execRunLocked(op, envelope, tier, absPath, cwd);
+      return await this.execRunLocked(op, envelope, tier, absPath, cwd, injectedFlags);
     } finally {
       this.execBusy = false;
       const active = this.activeExec;
@@ -873,6 +883,7 @@ export class MechaExecutor {
     tier: 'T1' | 'T2',
     absPath: string,
     cwd: PathGuardResult,
+    injectedFlags: string[] | null,
   ): Promise<Mecha.MechaOpResult> {
     const { opId } = envelope;
     // cwd 硬边界先于确认（白名单确认不可放行；判级时已归一，deny 落在此处）
@@ -893,7 +904,13 @@ export class MechaExecutor {
     const envHits = denylistedExecEnvKeys(op.env);
     const envNote =
       envHits.length > 0 ? `（环境变量含 ${envHits.join('、')}）` : '';
-    const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}（工作目录 ${cwd.real}）${envNote}`;
+    // 注入旗标恒可见说明行（终审 fix #5）：argv 展示有界截断只作用于尾部，
+    // 追加旗标恰在截断区——独立说明行不受截断影响，卡面披露不缺席。
+    const injectedNote =
+      injectedFlags !== null
+        ? `（平台策略注入旗标：${injectedFlags.join(' ')}）`
+        : '';
+    const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}${injectedNote}（工作目录 ${cwd.real}）${envNote}`;
     // D3/D4 裁定（2026-11-21）：T1 命中传递执行风险类（npm 生命周期/git 钩子/
     // pip 本地构建/npx 类/make·cargo）→ 卡面追加披露线；判级不变，选择权与
     // 责任在消费者。T2 已有红卡披露语前置，不叠加。
