@@ -9,7 +9,7 @@ import {
   resolveWithinWhitelist,
   type PathGuardResult,
 } from '../enforcement/path-guard.js';
-import { computeTier, denylistedExecEnvKeys, type ConfirmTierDenyCode } from '../enforcement/confirm-tier.js';
+import { computeTier, denylistedExecEnvKeys, transitiveExecHint, type ConfirmTierDenyCode } from '../enforcement/confirm-tier.js';
 import { matchProgram, type ProgramGuardResult } from '../enforcement/program-guard.js';
 import type { ProvenanceStore } from '../enforcement/provenance.js';
 
@@ -135,6 +135,11 @@ export interface MechaConfirmMeta {
   /** exec.run 专属：matchProgram 产物 absPath（判级 ctx.program.absPath
    * 同源——裸名命中为登记路径 verbatim，路径命中为真实化产物）。 */
   programAbsPath?: string;
+  /** exec.run 专属（D2 裁定 2026-11-21）：驱动侧 verbatim argv 与 cwd——
+   * session 精确复现记忆键（程序真身+完整 argv+cwd 逐字）的组成部分；
+   * 换任何参数/目录都重新确认。非 exec 原语缺省。 */
+  argv?: string[];
+  cwd?: string;
 }
 
 /** executor 依赖注入（R1 裁定：scratchDir 构造参数，Task 12 session 接线）。 */
@@ -879,12 +884,23 @@ export class MechaExecutor {
     const envNote =
       envHits.length > 0 ? `（环境变量含 ${envHits.join('、')}）` : '';
     const baseSummary = `驾驶员想执行 ${boundedArgvDisplay(op.argv)}（工作目录 ${cwd.real}）${envNote}`;
+    // D3/D4 裁定（2026-11-21）：T1 命中传递执行风险类（npm 生命周期/git 钩子/
+    // pip 本地构建/npx 类/make·cargo）→ 卡面追加披露线；判级不变，选择权与
+    // 责任在消费者。T2 已有红卡披露语前置，不叠加。
+    const transitive =
+      tier === 'T1' ? transitiveExecHint(absPath, op.argv) : null;
     const summary =
-      tier === 'T2' ? `${EXEC_T2_DISCLOSURE}\n${baseSummary}` : baseSummary;
+      tier === 'T2'
+        ? `${EXEC_T2_DISCLOSURE}\n${baseSummary}`
+        : transitive !== null
+          ? `${baseSummary}\n${transitive}`
+          : baseSummary;
     const denied = await this.requireConfirm(envelope, tier, summary, {
       opType: 'exec.run',
       tier,
       programAbsPath: absPath,
+      argv: op.argv,
+      cwd: op.cwd,
     });
     if (denied) return denied;
 

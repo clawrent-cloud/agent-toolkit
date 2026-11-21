@@ -207,15 +207,21 @@ const INTERPRETER_ALIASES: Record<string, string> = {
  * symlink 的高频形态），剥到 `python3`。要求点号打头故 `python3` 本身不动。 */
 const VERSION_SUFFIX = /\.\d+(\.\d+)*$/;
 
-/** 程序真身 → 解释器身份条目：basename 剥 `.exe/.bat/.cmd`（大小写不敏感）
- * → 剥尾部版本后缀 → 整串小写 → 别名归一（review 裁定 Important 3 的固定
- * 顺序）后查表。非解释器返回 undefined。零 fs 访问。 */
-function interpreterEntry(absPath: string): InterpreterInlineSpec | undefined {
-  const base = path
+/** 程序真身 basename 归一（解释器身份判定与传递执行风险分类共用的口径）：
+ * basename 剥 `.exe/.bat/.cmd`（大小写不敏感）→ 剥尾部版本后缀 → 整串小写。 */
+function normalizedProgramBase(absPath: string): string {
+  return path
     .basename(absPath)
     .replace(/\.(exe|bat|cmd)$/i, '')
     .replace(VERSION_SUFFIX, '')
     .toLowerCase();
+}
+
+/** 程序真身 → 解释器身份条目：basename 归一（normalizedProgramBase 同一口径）
+ * → 别名归一（review 裁定 Important 3 的固定顺序）后查表。非解释器返回
+ * undefined。零 fs 访问。 */
+function interpreterEntry(absPath: string): InterpreterInlineSpec | undefined {
+  const base = normalizedProgramBase(absPath);
   return INTERPRETER_INLINE[INTERPRETER_ALIASES[base] ?? base];
 }
 
@@ -274,6 +280,149 @@ export function denylistedExecEnvKeys(
   }
   const present = new Set(keys);
   return EXEC_ENV_DENYLIST.filter((d) => present.has(d));
+}
+
+// ── 传递执行风险类（D3/D4 裁定 2026-11-21，binding）────────────────────────
+//
+// 这些程序会「不经 argv」执行工作目录里驾驶员可写的文件：npm/yarn/pnpm/bun
+// 的生命周期钩子与 scripts 入口、npx/bunx/uvx/pipx 的下载即执行、git 的
+// 钩子/别名/ext:: 传输、pip 的本地构建形态、make/cargo 的构建文件。
+// **判级不变**（用户裁定：维持 T1，不注入 --ignore-scripts，选择权与责任在
+// 消费者——与 spec §6.3/§7「披露而非家长式硬拦」哲学一致）；命中仅让
+// executor 在 T1 确认卡摘要追加 EXEC_T1_TRANSITIVE_HINT 披露线。纯形态判定，
+// 零 fs 访问；真身 basename 归一与解释器身份判定同一口径。
+
+/** T1 确认卡的传递执行风险披露线（executor 摘要逐字消费，单一事实源）。 */
+export const EXEC_T1_TRANSITIVE_HINT =
+  '⚠ 此类程序可能自动执行项目目录内的脚本/钩子（如安装脚本、构建文件、git 钩子）——批准即等于允许执行这些代码。';
+
+/** 整程序风险类：任意形态 exec 都提示——包管理器族（生命周期/scripts 通道）、
+ * 下载即执行类、构建运行器（Makefile/build.rs 即命令清单）。 */
+const TRANSITIVE_WHOLE_PROGRAM: ReadonlySet<string> = new Set([
+  'npm',
+  'yarn',
+  'pnpm',
+  'bun',
+  'npx',
+  'bunx',
+  'uvx',
+  'pipx',
+  'make',
+  'nmake',
+  'cargo',
+]);
+
+/** git 钩子承载子命令：这些操作执行 `.git/hooks/*`（驾驶员可 fs.write 植入）。 */
+const GIT_HOOK_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'commit',
+  'merge',
+  'rebase',
+  'pull',
+  'push',
+  'am',
+  'hook',
+]);
+
+/** git 内置命令快照（v0 钉死；来源 git 常用命令面）。清单外首词按 alias 通道
+ * 提示——消费者自定义别名（st/lg 习惯词）正是要披露的形态；罕见内置词的
+ * 误提示属宁误红方向（仅提示线，不改判级）。 */
+const GIT_BUILTINS: ReadonlySet<string> = new Set([
+  'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch',
+  'bugreport', 'bundle', 'cat-file', 'check-attr', 'check-ignore',
+  'check-mailmap', 'check-ref-format', 'checkout', 'checkout-index', 'cherry',
+  'cherry-pick', 'citool', 'clean', 'clone', 'column', 'commit', 'config',
+  'count-objects', 'credential', 'credential-cache', 'credential-store',
+  'describe', 'diagnose', 'diff', 'difftool', 'fast-export', 'fast-import',
+  'fetch', 'filter-branch', 'fmt-merge-msg', 'for-each-ref', 'format-patch',
+  'fsck', 'fsmonitor--daemon', 'gc', 'get-tar-commit-id', 'grep', 'gui',
+  'hash-object', 'help', 'hook', 'http-backend', 'http-fetch', 'http-push',
+  'imap-send', 'index-pack', 'init', 'init-db', 'instaweb',
+  'interpret-trailers', 'log', 'ls-files', 'ls-remote', 'ls-tree', 'mailinfo',
+  'mailsplit', 'maintenance', 'merge', 'merge-base', 'merge-file',
+  'merge-index', 'merge-octopus', 'merge-one-file', 'merge-ours',
+  'merge-recursive', 'merge-resolve', 'merge-tree', 'mktag', 'mktree', 'mv',
+  'name-rev', 'notes', 'p4', 'pack-objects', 'pack-redundant', 'pack-refs',
+  'patch-id', 'prune', 'prune-packed', 'pull', 'push', 'quiltimport',
+  'range-diff', 'read-tree', 'rebase', 'reflog', 'relink', 'remote',
+  'remote-ext', 'remote-fd', 'repack', 'replace', 'request-pull', 'rerere',
+  'reset', 'restore', 'rev-list', 'rev-parse', 'revert', 'rm', 'send-email',
+  'send-pack', 'sh-i18n', 'sh-setup', 'shortlog', 'show', 'show-branch',
+  'show-index', 'show-ref', 'sparse-checkout', 'stage', 'stash', 'status',
+  'stripspace', 'submodule', 'svn', 'switch', 'symbolic-ref', 'tag',
+  'unpack-file', 'unpack-objects', 'update-index', 'update-ref',
+  'update-server-info', 'upload-archive', 'upload-pack', 'var',
+  'verify-commit', 'verify-pack', 'verify-tag', 'version', 'whatchanged',
+  'worktree', 'write-tree',
+]);
+
+/** git 全局旗标中吃掉下一参数的清单（子命令扫描时跳过其值参数）。 */
+const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+]);
+
+/** pip 目录形态实参：`.`/`..`、含路径分隔符（含 `./x`、`../x`、VCS URL）、
+ * 绝对路径（posix 或 win32 任一口径）。registry 包名（`pkg==1.0` 等）不含
+ * 分隔符，不误报。 */
+function pipDirShapedArg(arg: string): boolean {
+  return (
+    arg === '.' ||
+    arg === '..' ||
+    arg.includes('/') ||
+    arg.includes('\\') ||
+    path.isAbsolute(arg) ||
+    path.win32.isAbsolute(arg)
+  );
+}
+
+/**
+ * 传递执行风险判定（见区块头注）：命中返回 EXEC_T1_TRANSITIVE_HINT（executor
+ * 在 **T1** 确认卡摘要追加；T2 已有红卡披露语，不叠加），未命中返回 null。
+ * `absPath` 为 matchProgram 产物真身；`argv` 为驱动侧 verbatim（分类只看
+ * argv[1..]，与解释器内联旗标扫描同一约定）。纯函数，零 fs 访问。
+ */
+export function transitiveExecHint(absPath: string, argv: string[]): string | null {
+  const base = normalizedProgramBase(absPath);
+  if (TRANSITIVE_WHOLE_PROGRAM.has(base)) return EXEC_T1_TRANSITIVE_HINT;
+  if (base === 'git') {
+    const rest = argv.slice(1);
+    for (const arg of rest) {
+      // ext:: 传输 = 直接执行命令串；钩子承载词任意位置出现即提示（子命令
+      // 值参数里偶现同名属误提示，宁误红方向）
+      if (arg.startsWith('ext::')) return EXEC_T1_TRANSITIVE_HINT;
+      if (GIT_HOOK_SUBCOMMANDS.has(arg)) return EXEC_T1_TRANSITIVE_HINT;
+    }
+    // 首词（跳过全局旗标及其值参数、布尔旗标）非内置 = alias 通道（.git/config
+    // 的 `!shell` 串——驾驶员可 fs.write 植入）
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i]!;
+      if (GIT_GLOBAL_VALUE_FLAGS.has(arg)) {
+        i++; // 跳过该旗标的值参数
+        continue;
+      }
+      if (arg.startsWith('-')) continue; // 布尔/全局旗标
+      if (!GIT_BUILTINS.has(arg)) return EXEC_T1_TRANSITIVE_HINT;
+      break; // 首词=内置 → 后续为该子命令的参数，不再扫
+    }
+    return null;
+  }
+  if (base === 'pip' || base === 'pip3') {
+    for (const arg of argv.slice(1)) {
+      if (
+        arg === '-e' ||
+        arg.startsWith('--editable') ||
+        arg === '-r' ||
+        arg.startsWith('--requirement') ||
+        pipDirShapedArg(arg)
+      ) {
+        return EXEC_T1_TRANSITIVE_HINT;
+      }
+    }
+    return null;
+  }
+  return null;
 }
 
 /**

@@ -533,7 +533,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     expect(haltedAgain).toEqual({ ok: true });
   }, 20_000);
 
-  it('I1+I3 接线：错会话信封拒收（session mismatch）落当前会话日志；T1 remember 后同程序 exec 免确认（audit 恰一对 confirm + confirmed_remembered 行）', async () => {
+  it('I1+I3 接线：错会话信封拒收（session mismatch）落当前会话日志；T1 remember 后同命令逐字复现免确认、换参数重新确认（audit：confirm×2 + confirmed_remembered×1）', async () => {
     const home = makeHome('d16h');
     const deliver = fs.mkdtempSync(join(tmpdir(), 'mecha-d16-remember-'));
     created.push(deliver);
@@ -579,13 +579,28 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     );
     expect(r1.ok).toBe(true);
 
-    // ② 同程序第二次 exec：免确认（无 confirmRequest）→ opResult ok
+    // ② 同命令逐字复现（程序+argv+cwd 全同，D2 裁定 2026-11-21）：免确认 → opResult ok
     sendExec('op-r2');
     const r2 = await relay.driver.waitFor(() =>
       inbox.opResults.find((r) => r.opId === 'op-r2'),
     );
     expect(r2.ok).toBe(true);
     expect(inbox.confirms.find((c) => c.opId === 'op-r2')).toBeUndefined();
+
+    // ②' 同程序换参数 → 记忆键不匹配 → 重新确认（批复不带 remember）
+    relay.driver.sendOp({
+      opId: 'op-r2b',
+      sessionId: 'sess-d16h',
+      op: { type: 'exec.run', argv: ['node', 'a.js', '--flag'], cwd: '.' },
+    });
+    const confirm2b = await relay.driver.waitFor(() =>
+      inbox.confirms.find((c) => c.opId === 'op-r2b'),
+    );
+    relay.driver.sendDown({ requestId: confirm2b.requestId, approved: true });
+    const r2b = await relay.driver.waitFor(() =>
+      inbox.opResults.find((r) => r.opId === 'op-r2b'),
+    );
+    expect(r2b.ok).toBe(true);
 
     // ③ 错会话信封：IO_ERROR 'session mismatch'（不执行、不确认）
     sendExec('op-z', 'sess-ghost');
@@ -597,8 +612,8 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
     expect(rz.error?.message).toBe('session mismatch');
     expect(inbox.confirms.find((c) => c.opId === 'op-z')).toBeUndefined();
 
-    // ④ 终局合卷后核审计面：恰一对 confirm（op-r1）+ confirmed_remembered
-    //（op-r2）+ op_rejected_session_mismatch（op-z）；错会话 op 无 op 行
+    // ④ 终局合卷后核审计面：恰两对 confirm（op-r1 带 remember、op-r2b 不带）+
+    // confirmed_remembered（op-r2）+ op_rejected_session_mismatch（op-z）；错会话 op 无 op 行
     relay.driver.end('completed');
     const lines = await waitFor(() => {
       const parsed = readLogLines(logFile);
@@ -608,7 +623,7 @@ describe('startDaemon × mock relay（真 ws 全链总装）', () => {
         : undefined;
     });
     const confirmLines = lines.filter((l) => l['kind'] === 'confirm');
-    expect(confirmLines).toHaveLength(1);
+    expect(confirmLines).toHaveLength(2);
     expect(confirmLines[0]!['request']).toMatchObject({ requestId: 'op-r1:confirm' });
     const lifecycles = lines.filter((l) => l['kind'] === 'lifecycle');
     expect(

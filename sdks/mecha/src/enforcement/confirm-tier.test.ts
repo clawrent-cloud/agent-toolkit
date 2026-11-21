@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Mecha } from '@clawrent/protocol';
 import type { ProgramGuardResult } from './program-guard.js';
-import { computeTier } from './confirm-tier.js';
+import { computeTier, EXEC_T1_TRANSITIVE_HINT, transitiveExecHint } from './confirm-tier.js';
 
 // 合成 EACCES 缝（随 program-guard 同一手艺）：仅当 realpathSync(.native) 对
 // basename 为 eaccs-dir 的段抛 ENOENT 时翻译成 EACCES——其余全部透传真实 fs
@@ -847,5 +847,85 @@ describe('computeTier（confirm-tier 判级）', () => {
     expect(() =>
       computeTier(bogus, { program: okProgram('/bin/true'), provenance: none }),
     ).toThrowError(/未知 op/);
+  });
+
+  // ── D3/D4 裁定（2026-11-21）：传递执行风险类——只影响 T1 卡面提示，不改判级 ──
+
+  /** 谓词构造：absPath = ws/bin/<真身名>，argv = [<名>, ...参数]。 */
+  const hintOf = (ws: string, base: string, args: string[]): string | null =>
+    transitiveExecHint(join(ws, 'bin', base), [base, ...args]);
+
+  it('transitiveExecHint：npm 族任意形态（install/run/裸调用）与 npx 类整程序 → 提示', () => {
+    const ws = makeWorkspace();
+    // npm/yarn/pnpm/bun 族：任意子命令一律提示（生命周期与 scripts 通道）
+    expect(hintOf(ws, 'npm.cmd', ['install'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'npm.cmd', ['run', 'build'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'npm.cmd', [])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'yarn', ['install'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pnpm.cmd', ['install', 'lodash'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'bun', ['install'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    // 下载即执行类整程序
+    expect(hintOf(ws, 'npx.cmd', ['vitest'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'bunx', ['tsx'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'uvx', ['ruff'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pipx', ['run', 'black'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+  });
+
+  it('transitiveExecHint：git 钩子承载子命令 / 非内置首词（alias 通道）/ ext:: → 提示；读类内置与正常 clone 不提示', () => {
+    const ws = makeWorkspace();
+    for (const sub of ['commit', 'merge', 'rebase', 'pull', 'push', 'am', 'hook']) {
+      expect(hintOf(ws, 'git.exe', [sub])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    }
+    // 全局旗标前置的子命令形态（-C dir commit）照提示
+    expect(hintOf(ws, 'git.exe', ['-C', 'proj', 'commit', '-m', 'x'])).toBe(
+      EXEC_T1_TRANSITIVE_HINT,
+    );
+    // 非内置首词 = alias 通道（消费者习惯别名 st/lg 也会命中——宁误红，仅提示）
+    expect(hintOf(ws, 'git.exe', ['lg'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    // ext:: 传输 = 直接执行命令串
+    expect(hintOf(ws, 'git.exe', ['clone', 'ext::sh -c evil'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    // 读类/暂存类内置：不提示
+    expect(hintOf(ws, 'git.exe', ['status'])).toBeNull();
+    expect(hintOf(ws, 'git.exe', ['log', '-1'])).toBeNull();
+    expect(hintOf(ws, 'git.exe', ['diff', '--stat'])).toBeNull();
+    expect(hintOf(ws, 'git.exe', ['add', '.'])).toBeNull();
+    expect(hintOf(ws, 'git.exe', ['clone', 'https://github.com/x/y.git'])).toBeNull();
+  });
+
+  it('transitiveExecHint：pip 本地安装形态（目录实参/-e/-r/VCS URL）→ 提示；registry 包名不提示', () => {
+    const ws = makeWorkspace();
+    expect(hintOf(ws, 'pip.exe', ['install', 'requests'])).toBeNull();
+    expect(hintOf(ws, 'pip.exe', ['install', 'flask==3.0.0'])).toBeNull();
+    expect(hintOf(ws, 'pip.exe', ['install', '.'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip.exe', ['install', '-e', '.'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip.exe', ['install', './libs/pkg'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip.exe', ['install', 'D:\\proj'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip.exe', ['install', '-r', 'requirements.txt'])).toBe(
+      EXEC_T1_TRANSITIVE_HINT,
+    );
+    // VCS URL：构建钩子通道（含 #subdir 形态）
+    expect(hintOf(ws, 'pip.exe', ['install', 'git+https://github.com/x/y.git'])).toBe(
+      EXEC_T1_TRANSITIVE_HINT,
+    );
+  });
+
+  it('transitiveExecHint：构建运行器（make/cargo）整程序提示；python/node 不提示（import 图属已知边界层）', () => {
+    const ws = makeWorkspace();
+    expect(hintOf(ws, 'make', ['-C', 'proj'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'nmake.exe', [])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'cargo', ['build'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'cargo.exe', ['test'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    // 负对照：解释器与普通程序不提示（D1 维持 T1，import 图入已知边界而非逐卡提示）
+    expect(hintOf(ws, 'python.exe', ['sort.py'])).toBeNull();
+    expect(hintOf(ws, 'python.exe', ['-c', 'print(1)'])).toBeNull();
+    expect(hintOf(ws, 'node.exe', ['app.js'])).toBeNull();
+    expect(hintOf(ws, 'curl.exe', ['-o', 'out.csv', 'https://x/y'])).toBeNull();
+  });
+
+  it('transitiveExecHint：真身 basename 归一（扩展名/版本后缀/大小写）与解释器同款', () => {
+    const ws = makeWorkspace();
+    expect(hintOf(ws, 'NPM.EXE', ['install'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'pip3.11.exe', ['install', '.'])).toBe(EXEC_T1_TRANSITIVE_HINT);
+    expect(hintOf(ws, 'myrunner.exe', ['install'])).toBeNull();
   });
 });

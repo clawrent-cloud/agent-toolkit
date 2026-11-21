@@ -257,7 +257,11 @@ export class MechaSession {
   /** T1-remember 记忆集（I3 fix，spec §5.3）：本会话内消费者勾选「不再
    * 确认」的 exec 程序真身（matchProgram 产物 absPath）。仅 T1 exec 命中；
    * T2（上传脚本/内联/溯源红）永不入集。集随终局清空——新 offer = 新集。 */
-  private readonly rememberedPrograms = new Set<string>();
+  /** T1-remember 记忆集（I3；D2 裁定 2026-11-21 收紧为精确复现）：键 =
+   * execRememberKey（程序真身 + 完整 argv + cwd 逐字拼接）。换任何参数/
+   * 目录/程序都重新确认——「批过 npm 后 npm run 任意命令静默」的跨命令
+   * 放大面已灭。终局清空。 */
+  private readonly rememberedExecs = new Set<string>();
 
   /** 断链闸位（armed/paused 之上；宽限计时器在跑即为 true）。 */
   private linkDown = false;
@@ -459,7 +463,7 @@ export class MechaSession {
     this.executor = null;
     this.activePolicy = null;
     this.activeSessionId = null;
-    this.rememberedPrograms.clear();
+    this.rememberedExecs.clear();
     this.scratchDirValue = null;
     this.stateValue = 'idle';
     this.emit('ended', burnError === undefined ? { reason } : { reason, burnError });
@@ -604,8 +608,9 @@ export class MechaSession {
 
   /**
    * 包装原始 confirm 回调（executor.deps.confirm 实体）：
-   *  - T1-remember 快速放行（I3 fix，spec §5.3「本会话不再确认」的兑现）：
-   *    meta 表明本次确认是 exec.run + T1 且程序真身在记忆集 → 不发
+   *  - T1-remember 快速放行（I3 fix，spec §5.3「本会话不再确认」的兑现；
+   *    D2 裁定 2026-11-21 收紧为**精确复现**）：meta 表明本次确认是 exec.run
+   *    + T1 且其记忆键（程序真身+完整 argv+cwd 逐字）在记忆集 → 不发
    *    mecha.confirmRequest、无 300s 窗口，直接 approved 结算，并在当前
    *    会话日志留 confirmed_remembered 生命周期行。T2 永不命中——meta.tier
    *    由 executor 判级产物携带，computeTier 照常先跑、其 T2 判定先于本
@@ -615,29 +620,51 @@ export class MechaSession {
    *    （默认 300s）——结算即清计时器；超时以 `approved:false + timeout`
    *    结算（executor 据标记产出 CONFIRM_TIMEOUT）；
    *  - 原始回调先答：原样透传（approved / 人拒 CONFIRM_DENIED 原口径）；
-   *    approved+remember 且本次是 exec.run T1 → 程序真身入记忆集（终局清）；
+   *    approved+remember 且本次是 exec.run T1 → 精确复现键入记忆集（终局清）；
    *  - 原始回调抛错（通道故障）：透传给 executor（execute 兜底 IO_ERROR，
    *    与 Task 10/11 既有口径一致——通道故障 ≠ 人拒）；
    *  - 断链/终局收割：所有 pending 以 `approved:false + link_down` 结算——
    *    迟到的批准拿到的是已结算的 race，绝不放行（文件头规则 4/6）。
    */
+
+  /** D2 裁定（2026-11-21）：T1-remember 记忆键 = 程序真身 + 完整 argv + cwd
+   * （均驱动侧 verbatim）逐字拼接。meta 任一组分缺失 → null（不记忆、不放
+   * 行——fail-closed）。安全性锚点：argv 内文件被驾驶员改写必经 fs.write →
+   * 进溯源表 → 该 exec 恒 T2，故逐字复现不被重写文件骗过；残余仅「入口不
+   * 变 + 新植模块」（import 图，已知边界，L3 根治）。 */
+  private execRememberKey(meta: MechaConfirmMeta): string | null {
+    if (
+      meta.programAbsPath === undefined ||
+      meta.argv === undefined ||
+      meta.cwd === undefined
+    ) {
+      return null;
+    }
+    return JSON.stringify([meta.programAbsPath, meta.argv, meta.cwd]);
+  }
+
   private wrappedConfirm(
     req: Mecha.MechaConfirmRequest,
     meta?: MechaConfirmMeta,
   ): Promise<MechaConfirmSettlement> {
-    if (
-      this.linkDown === false &&
-      this.executor !== null &&
+    const program = meta?.programAbsPath;
+    const rememberKey =
       meta !== undefined &&
       meta.tier === 'T1' &&
       meta.opType === 'exec.run' &&
-      meta.programAbsPath !== undefined &&
-      this.rememberedPrograms.has(meta.programAbsPath)
+      program !== undefined
+        ? this.execRememberKey(meta)
+        : null;
+    if (
+      this.linkDown === false &&
+      this.executor !== null &&
+      rememberKey !== null &&
+      this.rememberedExecs.has(rememberKey)
     ) {
       try {
         this.deps.logLifecycle?.('confirmed_remembered', {
           opId: req.opId,
-          program: meta.programAbsPath,
+          program,
         });
       } catch {
         // 审计尽力而为：免确认放行不因日志故障改道
@@ -685,20 +712,18 @@ export class MechaSession {
       });
       this.deps.confirm(req).then(
         (r) => {
-          // I3：approved + remember 且本次是 exec.run T1 → 程序真身入记忆集
-          //（会话内后续同程序 exec 免确认；T2 不入集；终局清空）。NB-4 守卫：
-          // executor 非空才入集——终局收割后的迟到批复（direct-library 接线
-          // 的原始 promise 兑现）不得为已死的会话留下记忆（新 offer = 新集）。
+          // I3 + D2（2026-11-21）：approved + remember 且本次是 exec.run T1
+          // → 精确复现键（程序+argv+cwd 逐字）入记忆集（会话内仅逐字复跑免
+          // 确认；T2 不入集；终局清空）。NB-4 守卫：executor 非空才入集——
+          // 终局收割后的迟到批复（direct-library 接线的原始 promise 兑现）
+          // 不得为已死的会话留下记忆（新 offer = 新集）。
           if (
             this.executor !== null &&
             r.approved &&
             r.remember === true &&
-            meta !== undefined &&
-            meta.tier === 'T1' &&
-            meta.opType === 'exec.run' &&
-            meta.programAbsPath !== undefined
+            rememberKey !== null
           ) {
-            this.rememberedPrograms.add(meta.programAbsPath);
+            this.rememberedExecs.add(rememberKey);
           }
           finish(r.approved ? 'approved' : 'denied', () => resolve({ ...r }));
         },

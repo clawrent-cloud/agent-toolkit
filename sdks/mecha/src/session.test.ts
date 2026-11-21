@@ -730,12 +730,14 @@ describe('MechaSession 信封 sessionId 绑定（I1）', () => {
 
 // ── I3：T1 remember（spec §5.3 兑现，final review）───────────────────────
 
-describe('MechaSession T1 remember（I3）', () => {
-  it('exec T1 批准+记住 → 同程序再 exec 免确认且 ok；不同程序仍确认；T2 永不记忆', async () => {
+describe('MechaSession T1 remember（I3；2026-11-21 D2 裁定：精确复现才免卡）', () => {
+  it('exec T1 批准+记住 → 同命令逐字复现（程序+argv+cwd）免确认；换参数/换目录/换程序仍确认；T2 永不记忆', async () => {
     const h = makeHarness({ remember: true });
     h.acceptOffer();
     // fixture 直写脚本（不经驾驶 op → 不入溯源 → exec 判 T1）
     fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");');
+    fs.mkdirSync(join(h.ws, 'sub'));
+    fs.writeFileSync(join(h.ws, 'sub', 'a.js'), 'console.log("a");');
 
     const r1 = await h.session.executeOp(
       env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r1'),
@@ -744,7 +746,7 @@ describe('MechaSession T1 remember（I3）', () => {
     expect(h.confirm).toHaveBeenCalledTimes(1);
     expect(h.confirm.mock.calls[0]![0].tier).toBe('T1');
 
-    // 同程序第二次 exec：免确认（无 confirmRequest）+ ok
+    // 同命令逐字复现（程序+完整 argv+cwd 全同）：免确认（无 confirmRequest）+ ok
     const r2 = await h.session.executeOp(
       env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-r2'),
     );
@@ -754,6 +756,20 @@ describe('MechaSession T1 remember（I3）', () => {
       opId: 'op-r2',
       program: NODE.absPath,
     });
+
+    // D2：同程序换任何参数 → 记忆键不匹配 → 重新确认
+    const r2b = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js', '--flag'], cwd: '.' }, 'op-r2b'),
+    );
+    expect(r2b.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(2);
+
+    // D2：同 argv 换 cwd（白名单内子目录）→ 重新确认
+    const r2c = await h.session.executeOp(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: 'sub' }, 'op-r2c'),
+    );
+    expect(r2c.ok).toBe(true);
+    expect(h.confirm).toHaveBeenCalledTimes(3);
 
     // 不同程序 Y：不在记忆集 → 仍确认
     const yAbs = join(h.ws, process.platform === 'win32' ? 'y.cmd' : 'y.sh');
@@ -766,7 +782,7 @@ describe('MechaSession T1 remember（I3）', () => {
     await h.session.executeOp(
       env({ type: 'exec.run', argv: ['y', 'arg'], cwd: '.' }, 'op-r3'),
     );
-    expect(h.confirm).toHaveBeenCalledTimes(2);
+    expect(h.confirm).toHaveBeenCalledTimes(4);
 
     // T2（node -e 内联）永不命中记忆集：node 已记忆仍弹卡，且即便 remember
     // 批复也不会把 T2 写入记忆集
@@ -774,13 +790,13 @@ describe('MechaSession T1 remember（I3）', () => {
       env({ type: 'exec.run', argv: ['node', '-e', 'console.log(1)'], cwd: '.' }, 'op-t2a'),
     );
     expect(t2a.ok).toBe(true);
-    expect(h.confirm).toHaveBeenCalledTimes(3);
-    expect(h.confirm.mock.calls[2]![0].tier).toBe('T2');
+    expect(h.confirm).toHaveBeenCalledTimes(5);
+    expect(h.confirm.mock.calls[4]![0].tier).toBe('T2');
     const t2b = await h.session.executeOp(
       env({ type: 'exec.run', argv: ['node', '-e', 'console.log(2)'], cwd: '.' }, 'op-t2b'),
     );
     expect(t2b.ok).toBe(true);
-    expect(h.confirm).toHaveBeenCalledTimes(4); // T2 每次都确认
+    expect(h.confirm).toHaveBeenCalledTimes(6); // T2 每次都确认
   });
 
   it('T1 remember 不越权到 fs.*：fs.write 即便 remember 批复也不进记忆集（每写仍确认）', async () => {

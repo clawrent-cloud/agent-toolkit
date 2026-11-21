@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Mecha } from '@clawrent/protocol';
 import { MechaExecutor, type ExecutorLogger } from './executor.js';
 import { ProvenanceStore } from '../enforcement/provenance.js';
+import { EXEC_T1_TRANSITIVE_HINT } from '../enforcement/confirm-tier.js';
 
 // ── fixture 基建（os.tmpdir，plan 全局约束）────────────────────────────────
 
@@ -448,5 +449,54 @@ describe('exec.run：env 最小化（R13 裁定）', () => {
     } finally {
       delete process.env[SENTINEL];
     }
+  });
+});
+
+describe('exec.run 确认卡：传递执行风险提示线（D3/D4 裁定 2026-11-21，只改卡面不改判级）', () => {
+  it('T1 命中风险类（npm install）→ summary 追加提示且 meta 携带 argv/cwd；node 普通执行不追加；T2 不叠提示', async () => {
+    // npm 假条目：裸名命中不查存在性（确认被拒 → 不 spawn，卡面即全部断言对象）
+    const h = makeHarness({
+      programs: [
+        NODE,
+        { name: 'npm', absPath: join(tmpdir(), 'mecha-npm-stub', 'npm.cmd') },
+      ],
+      confirmApproved: false,
+    });
+    fs.writeFileSync(join(h.ws, 'a.js'), 'console.log("a");'); // fixture，非溯源 → T1
+
+    // ① npm install（T1 风险类）：卡面含提示线，meta 带 session 记忆键所需的 argv+cwd
+    const r1 = await h.executor.execute(
+      env({ type: 'exec.run', argv: ['npm', 'install'], cwd: '.' }),
+    );
+    expect(r1.ok).toBe(false); // confirmApproved:false → CONFIRM_DENIED（不 spawn）
+    expect(r1.error?.code).toBe('CONFIRM_DENIED');
+    expect(h.confirm.mock.calls[0]![0].tier).toBe('T1');
+    expect(h.confirm.mock.calls[0]![0].summary).toContain(EXEC_T1_TRANSITIVE_HINT);
+    expect(h.confirm.mock.calls[0]![1]).toMatchObject({
+      opType: 'exec.run',
+      tier: 'T1',
+      argv: ['npm', 'install'],
+      cwd: '.',
+    });
+
+    // ② node a.js（T1 非风险类）：卡面无提示线；meta 照带 argv/cwd
+    const r2 = await h.executor.execute(
+      env({ type: 'exec.run', argv: ['node', 'a.js'], cwd: '.' }, 'op-2'),
+    );
+    expect(r2.ok).toBe(false);
+    expect(h.confirm.mock.calls[1]![0].summary).not.toContain(EXEC_T1_TRANSITIVE_HINT);
+    expect(h.confirm.mock.calls[1]![1]).toMatchObject({ argv: ['node', 'a.js'], cwd: '.' });
+
+    // ③ 风险类程序但判 T2（危险 env 键）：红卡披露语前置，不叠加 T1 提示线
+    const r3 = await h.executor.execute(
+      env(
+        { type: 'exec.run', argv: ['npm', 'install'], cwd: '.', env: { NODE_OPTIONS: 'x' } },
+        'op-3',
+      ),
+    );
+    expect(r3.ok).toBe(false);
+    const s3 = h.confirm.mock.calls[2]![0].summary;
+    expect(s3.startsWith(RED_DISCLOSURE)).toBe(true);
+    expect(s3).not.toContain(EXEC_T1_TRANSITIVE_HINT);
   });
 });
