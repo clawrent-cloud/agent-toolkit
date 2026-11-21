@@ -388,11 +388,19 @@ await client.start({
     });                                                         // WS if attached, else REST fallback
   },
   onPendingApproval: async (session) => {
-    // Your admission gate — consulted ONLY when autoApprove: false. Inspect before deciding,
-    // never rubber-stamp. / 你的准入闸门——仅 autoApprove: false 时被咨询。先检查再决定，别橡皮图章。
-    if (session.guardrailDecision?.verdict === 'block') return false;   // platform already flagged it / 平台已标记
-    const task = session.taskDescription ?? '';
-    return !/(api[_-]?key|secret|password|token)\s*[:=]/i.test(task);   // false → stays pending for a human / false=留待人工
+    // Default-DENY admission gate — consulted ONLY when autoApprove: false. Returning false
+    // leaves the session pending for a human; approve ONLY what your policy POSITIVELY
+    // authorizes — never treat the absence of a bad signal as authorization.
+    // / 默认拒绝的准入闸门——仅 autoApprove: false 时被咨询。返回 false 会话留待人工；
+    // / 只批准政策正向授权的会话——绝不把「没有坏信号」当成批准理由。
+    const verdict = session.guardrailDecision?.verdict;
+    if (verdict === 'block' || verdict === 'advisory') return false;    // platform flagged it → human decides / 平台已标记 → 转人工
+    const task = session.taskDescription?.trim() ?? '';
+    if (!task) return false;                                            // nothing to evaluate → deny / 无任务描述可评估 → 拒
+    return myAdmissionPolicy.allows(session.consumerUserId, task);     // POSITIVE authorization — your allowlist (known
+                                                                         // consumers, task patterns, quotas); not on the
+                                                                         // list → false. / 正向授权——你的白名单（已知消费
+                                                                         // 者、任务模式、配额）；不在名单 → false。
   },
   // onSessionNew?: (session) => void,
   // onSessionEnded?: (session, reason?) => void,
